@@ -6,6 +6,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// PurchaseState 购买状态枚举类型
 type PurchaseState string
 
 const (
@@ -16,6 +17,7 @@ const (
 	PurchaseStateExpired   PurchaseState = "EXPIRED"
 )
 
+// SubscriptionState 订阅状态枚举类型
 type SubscriptionState string
 
 const (
@@ -28,6 +30,7 @@ const (
 	SubscriptionStateInGracePeriod SubscriptionState = "IN_GRACE_PERIOD"
 )
 
+// ProductType 产品类型枚举类型
 type ProductType string
 
 const (
@@ -35,6 +38,8 @@ const (
 	ProductTypeSubscription ProductType = "SUBSCRIPTION"
 )
 
+// User 用户模型
+// 使用UUID作为主键，支持软删除
 type User struct {
 	ID        uint           `gorm:"primarykey" json:"id"`
 	UUID      string         `gorm:"uniqueIndex;not null" json:"uuid"`
@@ -47,6 +52,8 @@ type User struct {
 	Subscriptions []Subscription `gorm:"foreignKey:UserID" json:"subscriptions,omitempty"`
 }
 
+// Product 商品模型
+// 对应Google Play Console中配置的商品信息
 type Product struct {
 	ID          uint        `gorm:"primarykey" json:"id"`
 	ProductID   string      `gorm:"uniqueIndex;not null" json:"product_id"` // Google Play product ID
@@ -59,6 +66,8 @@ type Product struct {
 	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
+// Purchase 购买记录模型
+// 记录用户的单次购买行为，包含购买状态和详细信息
 type Purchase struct {
 	ID                uint           `gorm:"primarykey" json:"id"`
 	UserID            uint           `gorm:"not null;index" json:"user_id"`
@@ -80,6 +89,8 @@ type Purchase struct {
 	Product Product `gorm:"foreignKey:ProductID;references:ProductID" json:"product,omitempty"`
 }
 
+// Subscription 订阅记录模型
+// 记录用户的订阅购买行为，包含订阅状态和续费信息
 type Subscription struct {
 	ID                      uint              `gorm:"primarykey" json:"id"`
 	UserID                  uint              `gorm:"not null;index" json:"user_id"`
@@ -131,6 +142,8 @@ const (
 	WebhookStatusSkipped   WebhookStatus = "SKIPPED"
 )
 
+// WebhookEvent Webhook事件模型
+// 记录Google Play发送的Webhook通知事件
 type WebhookEvent struct {
 	ID                         uint                        `gorm:"primarykey" json:"id"`
 	EventID                    string                      `gorm:"uniqueIndex;not null;size:100" json:"event_id"` // 事件ID
@@ -154,6 +167,8 @@ type WebhookEvent struct {
 	UpdatedAt                  time.Time                   `json:"updated_at"`
 }
 
+// OneTimeProductNotification 一次性商品通知结构
+// 包含单次购买相关的通知信息
 type OneTimeProductNotification struct {
 	Version          string `json:"version"`
 	NotificationType int    `json:"notification_type"`
@@ -161,6 +176,8 @@ type OneTimeProductNotification struct {
 	SKU              string `json:"sku"`
 }
 
+// SubscriptionNotification 订阅通知结构
+// 包含订阅相关的通知信息
 type SubscriptionNotification struct {
 	Version          string `json:"version"`
 	NotificationType int    `json:"notification_type"`
@@ -168,6 +185,8 @@ type SubscriptionNotification struct {
 	SubscriptionID   string `json:"subscription_id"`
 }
 
+// TestNotification 测试通知结构
+// 用于Google Play的Webhook测试
 type TestNotification struct {
 	Version string `json:"version"`
 }
