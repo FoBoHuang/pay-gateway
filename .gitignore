@@ -1,0 +1,97 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+
+# Build directories
+build/
+dist/
+bin/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.staging
+
+# Log files
+*.log
+logs/
+
+# Coverage reports
+coverage.out
+coverage.html
+*.cov
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Database files
+*.db
+*.sqlite
+
+# Redis dump
+dump.rdb
+
+# Google service account files (keep secure)
+config/service-account.json
+service-account.json
+*.json
+!package.json
+!package-lock.json
+!go.mod
+!go.sum
+
+# Docker volumes
+data/
+postgres_data/
+redis_data/
+
+# API documentation
+docs/swagger.json
+docs/swagger.yaml
+
+# Golangci-lint cache
+.golangci-lint.cache/
+
+# Air live reload (if used)
+.air.toml
+
+# Binary output
+pay-gateway
+pay-gateway-*
+
+# Local development files
+*.local
+*.backup
+
+# Claude Code configuration
+.claude/
+CLAUDE.md
