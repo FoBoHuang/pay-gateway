@@ -1,0 +1,52 @@
+# 支付网关配置文件示例
+# 复制此文件为 config.toml 并根据需要进行修改
+
+# 服务器配置
+[server]
+port = "8080"
+mode = "release"          # debug/release
+read_timeout = "15s"
+write_timeout = "15s"
+
+# 数据库配置
+[database]
+host = "localhost"
+port = "5432"
+user = "postgres"
+password = ""
+db_name = "billing"
+ssl_mode = "disable"
+max_idle_conns = 10
+max_open_conns = 100
+
+# Redis缓存配置
+[redis]
+host = "localhost"
+port = "6379"
+password = ""
+db = 0
+pool_size = 10
+min_idle_conns = 5
+
+# Google Play配置
+[google]
+service_account_file = "service-account.json"
+package_name = "com.example.app"
+webhook_secret = ""
+
+# JWT认证配置
+[jwt]
+secret = "your-secret-key"
+expire_time = "24h"
+
+# 支付宝配置
+[alipay]
+app_id = ""
+private_key = ""
+is_production = false
+notify_url = "https://your-domain.com/api/alipay/notify"
+return_url = "https://your-domain.com/payment/return"
+cert_mode = false
+app_cert_path = "certs/appCertPublicKey.crt"
+root_cert_path = "certs/alipayRootCert.crt"
+alipay_cert_path = "certs/alipayCertPublicKey_RSA2.crt"

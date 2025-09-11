@@ -81,6 +81,12 @@ docs/swagger.yaml
 # Golangci-lint cache
 .golangci-lint.cache/
 
+# Configuration files (except examples)
+configs/config.toml
+configs/*.toml
+!configs/config.example.toml
+!configs/*.example.toml
+
 # Air live reload (if used)
 .air.toml
 

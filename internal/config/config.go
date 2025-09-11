@@ -1,9 +1,12 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Config 应用配置总结构，包含所有模块的配置信息
@@ -77,54 +80,207 @@ type AlipayConfig struct {
 	AlipayCertPath string // 支付宝公钥证书路径
 }
 
-// Load 从环境变量加载配置
-// 支持默认值，确保配置完整性
+// Load 从配置文件加载配置，支持环境变量覆盖
+// 首先尝试加载config.toml文件，然后环境变量可以覆盖文件中的配置
 func Load() *Config {
+	config := &Config{}
+	
+	// 尝试从配置文件加载
+	if err := loadFromFile(config); err != nil {
+		log.Printf("配置文件加载失败: %v, 使用默认配置", err)
+		config = loadDefaults()
+	}
+	
+	// 环境变量可以覆盖配置文件中的设置
+	config.applyEnvOverrides()
+	
+	return config
+}
+
+// loadFromFile 从config.toml文件加载配置
+func loadFromFile(config *Config) error {
+	// 尝试多个路径加载配置文件
+	configPaths := []string{
+		"configs/config.toml",                    // 项目configs目录
+		"config.toml",                            // 项目根目录（向后兼容）
+		"../configs/config.toml",                 // 上一级configs目录
+		"../config.toml",                         // 上一级目录
+		"../../configs/config.toml",              // 上两级configs目录
+		"../../config.toml",                      // 上两级目录
+		"/etc/pay-gateway/config.toml",           // 系统配置目录
+	}
+	
+	for _, path := range configPaths {
+		if _, err := os.Stat(path); err == nil {
+			if _, err := toml.DecodeFile(path, config); err != nil {
+				return err
+			}
+			log.Printf("配置文件加载成功: %s", path)
+			return nil
+		}
+	}
+	
+	return os.ErrNotExist
+}
+
+// loadDefaults 加载默认配置
+func loadDefaults() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Port:         getEnv("SERVER_PORT", "8080"),
-			Mode:         getEnv("SERVER_MODE", "release"),
-			ReadTimeout:  getDuration("SERVER_READ_TIMEOUT", 15*time.Second),
-			WriteTimeout: getDuration("SERVER_WRITE_TIMEOUT", 15*time.Second),
+			Port:         "8080",
+			Mode:         "release",
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
 		},
 		Database: DatabaseConfig{
-			Host:         getEnv("DB_HOST", "localhost"),
-			Port:         getEnv("DB_PORT", "5432"),
-			User:         getEnv("DB_USER", "postgres"),
-			Password:     getEnv("DB_PASSWORD", ""),
-			DBName:       getEnv("DB_NAME", "billing"),
-			SSLMode:      getEnv("DB_SSLMODE", "disable"),
-			MaxIdleConns: getInt("DB_MAX_IDLE_CONNS", 10),
-			MaxOpenConns: getInt("DB_MAX_OPEN_CONNS", 100),
+			Host:         "localhost",
+			Port:         "5432",
+			User:         "postgres",
+			Password:     "",
+			DBName:       "billing",
+			SSLMode:      "disable",
+			MaxIdleConns: 10,
+			MaxOpenConns: 100,
 		},
 		Redis: RedisConfig{
-			Host:         getEnv("REDIS_HOST", "localhost"),
-			Port:         getEnv("REDIS_PORT", "6379"),
-			Password:     getEnv("REDIS_PASSWORD", ""),
-			DB:           getInt("REDIS_DB", 0),
-			PoolSize:     getInt("REDIS_POOL_SIZE", 10),
-			MinIdleConns: getInt("REDIS_MIN_IDLE_CONNS", 5),
+			Host:         "localhost",
+			Port:         "6379",
+			Password:     "",
+			DB:           0,
+			PoolSize:     10,
+			MinIdleConns: 5,
 		},
 		Google: GoogleConfig{
-			ServiceAccountFile: getEnv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account.json"),
-			PackageName:        getEnv("GOOGLE_PACKAGE_NAME", "com.example.app"),
-			WebhookSecret:      getEnv("GOOGLE_WEBHOOK_SECRET", ""),
+			ServiceAccountFile: "service-account.json",
+			PackageName:        "com.example.app",
+			WebhookSecret:      "",
 		},
 		JWT: JWTConfig{
-			Secret:     getEnv("JWT_SECRET", "your-secret-key"),
-			ExpireTime: getDuration("JWT_EXPIRE_TIME", 24*time.Hour),
+			Secret:     "your-secret-key",
+			ExpireTime: 24 * time.Hour,
 		},
 		Alipay: AlipayConfig{
-			AppID:          getEnv("ALIPAY_APP_ID", ""),
-			PrivateKey:     getEnv("ALIPAY_PRIVATE_KEY", ""),
-			IsProduction:   getEnv("ALIPAY_IS_PRODUCTION", "false") == "true",
-			NotifyURL:      getEnv("ALIPAY_NOTIFY_URL", "https://your-domain.com/api/alipay/notify"),
-			ReturnURL:      getEnv("ALIPAY_RETURN_URL", "https://your-domain.com/payment/return"),
-			CertMode:       getEnv("ALIPAY_CERT_MODE", "false") == "true",
-			AppCertPath:    getEnv("ALIPAY_APP_CERT_PATH", "certs/appCertPublicKey.crt"),
-			RootCertPath:   getEnv("ALIPAY_ROOT_CERT_PATH", "certs/alipayRootCert.crt"),
-			AlipayCertPath: getEnv("ALIPAY_PUBLIC_CERT_PATH", "certs/alipayCertPublicKey_RSA2.crt"),
+			AppID:          "",
+			PrivateKey:     "",
+			IsProduction:   false,
+			NotifyURL:      "https://your-domain.com/api/alipay/notify",
+			ReturnURL:      "https://your-domain.com/payment/return",
+			CertMode:       false,
+			AppCertPath:    "certs/appCertPublicKey.crt",
+			RootCertPath:   "certs/alipayRootCert.crt",
+			AlipayCertPath: "certs/alipayCertPublicKey_RSA2.crt",
 		},
+	}
+}
+
+// applyEnvOverrides 应用环境变量覆盖
+func (c *Config) applyEnvOverrides() {
+	// 服务器配置覆盖
+	if port := os.Getenv("SERVER_PORT"); port != "" {
+		c.Server.Port = port
+	}
+	if mode := os.Getenv("SERVER_MODE"); mode != "" {
+		c.Server.Mode = mode
+	}
+	if readTimeout := getDuration("SERVER_READ_TIMEOUT", 0); readTimeout > 0 {
+		c.Server.ReadTimeout = readTimeout
+	}
+	if writeTimeout := getDuration("SERVER_WRITE_TIMEOUT", 0); writeTimeout > 0 {
+		c.Server.WriteTimeout = writeTimeout
+	}
+	
+	// 数据库配置覆盖
+	if host := os.Getenv("DB_HOST"); host != "" {
+		c.Database.Host = host
+	}
+	if port := os.Getenv("DB_PORT"); port != "" {
+		c.Database.Port = port
+	}
+	if user := os.Getenv("DB_USER"); user != "" {
+		c.Database.User = user
+	}
+	if password := os.Getenv("DB_PASSWORD"); password != "" {
+		c.Database.Password = password
+	}
+	if dbName := os.Getenv("DB_NAME"); dbName != "" {
+		c.Database.DBName = dbName
+	}
+	if sslMode := os.Getenv("DB_SSLMODE"); sslMode != "" {
+		c.Database.SSLMode = sslMode
+	}
+	if maxIdleConns := getInt("DB_MAX_IDLE_CONNS", 0); maxIdleConns > 0 {
+		c.Database.MaxIdleConns = maxIdleConns
+	}
+	if maxOpenConns := getInt("DB_MAX_OPEN_CONNS", 0); maxOpenConns > 0 {
+		c.Database.MaxOpenConns = maxOpenConns
+	}
+	
+	// Redis配置覆盖
+	if host := os.Getenv("REDIS_HOST"); host != "" {
+		c.Redis.Host = host
+	}
+	if port := os.Getenv("REDIS_PORT"); port != "" {
+		c.Redis.Port = port
+	}
+	if password := os.Getenv("REDIS_PASSWORD"); password != "" {
+		c.Redis.Password = password
+	}
+	if db := getInt("REDIS_DB", -1); db >= 0 {
+		c.Redis.DB = db
+	}
+	if poolSize := getInt("REDIS_POOL_SIZE", 0); poolSize > 0 {
+		c.Redis.PoolSize = poolSize
+	}
+	if minIdleConns := getInt("REDIS_MIN_IDLE_CONNS", 0); minIdleConns > 0 {
+		c.Redis.MinIdleConns = minIdleConns
+	}
+	
+	// Google配置覆盖
+	if serviceAccountFile := os.Getenv("GOOGLE_SERVICE_ACCOUNT_FILE"); serviceAccountFile != "" {
+		c.Google.ServiceAccountFile = serviceAccountFile
+	}
+	if packageName := os.Getenv("GOOGLE_PACKAGE_NAME"); packageName != "" {
+		c.Google.PackageName = packageName
+	}
+	if webhookSecret := os.Getenv("GOOGLE_WEBHOOK_SECRET"); webhookSecret != "" {
+		c.Google.WebhookSecret = webhookSecret
+	}
+	
+	// JWT配置覆盖
+	if secret := os.Getenv("JWT_SECRET"); secret != "" {
+		c.JWT.Secret = secret
+	}
+	if expireTime := getDuration("JWT_EXPIRE_TIME", 0); expireTime > 0 {
+		c.JWT.ExpireTime = expireTime
+	}
+	
+	// 支付宝配置覆盖
+	if appID := os.Getenv("ALIPAY_APP_ID"); appID != "" {
+		c.Alipay.AppID = appID
+	}
+	if privateKey := os.Getenv("ALIPAY_PRIVATE_KEY"); privateKey != "" {
+		c.Alipay.PrivateKey = privateKey
+	}
+	if isProduction := os.Getenv("ALIPAY_IS_PRODUCTION"); isProduction != "" {
+		c.Alipay.IsProduction = isProduction == "true"
+	}
+	if notifyURL := os.Getenv("ALIPAY_NOTIFY_URL"); notifyURL != "" {
+		c.Alipay.NotifyURL = notifyURL
+	}
+	if returnURL := os.Getenv("ALIPAY_RETURN_URL"); returnURL != "" {
+		c.Alipay.ReturnURL = returnURL
+	}
+	if certMode := os.Getenv("ALIPAY_CERT_MODE"); certMode != "" {
+		c.Alipay.CertMode = certMode == "true"
+	}
+	if appCertPath := os.Getenv("ALIPAY_APP_CERT_PATH"); appCertPath != "" {
+		c.Alipay.AppCertPath = appCertPath
+	}
+	if rootCertPath := os.Getenv("ALIPAY_ROOT_CERT_PATH"); rootCertPath != "" {
+		c.Alipay.RootCertPath = rootCertPath
+	}
+	if alipayCertPath := os.Getenv("ALIPAY_PUBLIC_CERT_PATH"); alipayCertPath != "" {
+		c.Alipay.AlipayCertPath = alipayCertPath
 	}
 }
 
