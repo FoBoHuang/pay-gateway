@@ -8,8 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"google-play-billing/internal/models"
-	"google-play-billing/internal/services"
+	"pay-gateway/internal/models"
+	"pay-gateway/internal/services"
 )
 
 // Handler 处理器结构

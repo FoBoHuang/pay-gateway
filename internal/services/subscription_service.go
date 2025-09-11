@@ -8,8 +8,8 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	"google-play-billing/internal/config"
-	"google-play-billing/internal/models"
+	"pay-gateway/internal/config"
+	"pay-gateway/internal/models"
 )
 
 // SubscriptionService 订阅服务接口

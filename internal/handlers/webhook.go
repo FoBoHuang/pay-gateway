@@ -13,14 +13,15 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	"google-play-billing/internal/models"
-	"google-play-billing/internal/services"
+	"pay-gateway/internal/models"
+	"pay-gateway/internal/services"
 )
 
 // WebhookHandler Webhook处理器
 type WebhookHandler struct {
 	db                  *gorm.DB
 	googleService       *services.GooglePlayService
+	alipayService       *services.AlipayService
 	paymentService      services.PaymentService
 	subscriptionService services.SubscriptionService
 	logger              *zap.Logger
@@ -30,6 +31,7 @@ type WebhookHandler struct {
 func NewWebhookHandler(
 	db *gorm.DB,
 	googleService *services.GooglePlayService,
+	alipayService *services.AlipayService,
 	paymentService services.PaymentService,
 	subscriptionService services.SubscriptionService,
 	logger *zap.Logger,
@@ -37,6 +39,7 @@ func NewWebhookHandler(
 	return &WebhookHandler{
 		db:                  db,
 		googleService:       googleService,
+		alipayService:       alipayService,
 		paymentService:      paymentService,
 		subscriptionService: subscriptionService,
 		logger:              logger,
@@ -645,4 +648,38 @@ func (h *WebhookHandler) successResponse(c *gin.Context, data interface{}) {
 		Message: "success",
 		Data:    data,
 	})
+}
+
+// HandleAlipayWebhook 处理支付宝Webhook
+// @Summary 处理支付宝Webhook
+// @Description 接收并处理支付宝的异步通知
+// @Tags Webhook
+// @Accept application/x-www-form-urlencoded
+// @Produce json
+// @Param notify_data formData string true "支付宝通知数据"
+// @Success 200 {string} string "success"
+// @Failure 400 {string} string "fail"
+// @Router /webhook/alipay [post]
+func (h *WebhookHandler) HandleAlipayWebhook(c *gin.Context) {
+	// 解析表单数据
+	notifyData := make(map[string]string)
+	for key, values := range c.Request.Form {
+		if len(values) > 0 {
+			notifyData[key] = values[0]
+		}
+	}
+
+	h.logger.Info("收到支付宝Webhook通知",
+		zap.String("out_trade_no", notifyData["out_trade_no"]),
+		zap.String("trade_status", notifyData["trade_status"]))
+
+	// 处理通知
+	if err := h.alipayService.HandleNotify(c.Request.Context(), notifyData); err != nil {
+		h.logger.Error("处理支付宝Webhook失败", zap.Error(err))
+		c.String(http.StatusOK, "fail")
+		return
+	}
+
+	// 必须返回 success，否则支付宝会一直重试
+	c.String(http.StatusOK, "success")
 }

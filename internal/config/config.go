@@ -13,6 +13,7 @@ type Config struct {
 	Redis    RedisConfig    // Redis缓存配置
 	Google   GoogleConfig   // Google Play配置
 	JWT      JWTConfig      // JWT认证配置
+	Alipay   AlipayConfig   // 支付宝配置
 }
 
 // ServerConfig 服务器配置参数
@@ -63,6 +64,19 @@ type JWTConfig struct {
 	ExpireTime time.Duration // Token过期时间，默认24小时
 }
 
+// AlipayConfig 支付宝配置
+type AlipayConfig struct {
+	AppID          string // 支付宝应用ID
+	PrivateKey     string // 应用私钥
+	IsProduction   bool   // 是否为生产环境
+	NotifyURL      string // 异步通知URL
+	ReturnURL      string // 同步返回URL
+	CertMode       bool   // 是否使用证书模式
+	AppCertPath    string // 应用公钥证书路径
+	RootCertPath   string // 支付宝根证书路径
+	AlipayCertPath string // 支付宝公钥证书路径
+}
+
 // Load 从环境变量加载配置
 // 支持默认值，确保配置完整性
 func Load() *Config {
@@ -99,6 +113,17 @@ func Load() *Config {
 		JWT: JWTConfig{
 			Secret:     getEnv("JWT_SECRET", "your-secret-key"),
 			ExpireTime: getDuration("JWT_EXPIRE_TIME", 24*time.Hour),
+		},
+		Alipay: AlipayConfig{
+			AppID:          getEnv("ALIPAY_APP_ID", ""),
+			PrivateKey:     getEnv("ALIPAY_PRIVATE_KEY", ""),
+			IsProduction:   getEnv("ALIPAY_IS_PRODUCTION", "false") == "true",
+			NotifyURL:      getEnv("ALIPAY_NOTIFY_URL", "https://your-domain.com/api/alipay/notify"),
+			ReturnURL:      getEnv("ALIPAY_RETURN_URL", "https://your-domain.com/payment/return"),
+			CertMode:       getEnv("ALIPAY_CERT_MODE", "false") == "true",
+			AppCertPath:    getEnv("ALIPAY_APP_CERT_PATH", "certs/appCertPublicKey.crt"),
+			RootCertPath:   getEnv("ALIPAY_ROOT_CERT_PATH", "certs/alipayRootCert.crt"),
+			AlipayCertPath: getEnv("ALIPAY_PUBLIC_CERT_PATH", "certs/alipayCertPublicKey_RSA2.crt"),
 		},
 	}
 }

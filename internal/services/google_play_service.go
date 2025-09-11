@@ -12,8 +12,8 @@ import (
 	"google.golang.org/api/androidpublisher/v3"
 	"google.golang.org/api/option"
 
-	"google-play-billing/internal/config"
-	"google-play-billing/internal/models"
+	"pay-gateway/internal/config"
+	"pay-gateway/internal/models"
 )
 
 // GooglePlayService Google Play服务核心结构体

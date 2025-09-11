@@ -9,8 +9,8 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	"google-play-billing/internal/config"
-	"google-play-billing/internal/models"
+	"pay-gateway/internal/config"
+	"pay-gateway/internal/models"
 )
 
 // PaymentService 支付服务接口
@@ -60,15 +60,17 @@ type paymentServiceImpl struct {
 	config        *config.Config
 	logger        *zap.Logger
 	googleService *GooglePlayService
+	alipayService *AlipayService
 }
 
 // NewPaymentService 创建支付服务
-func NewPaymentService(db *gorm.DB, cfg *config.Config, logger *zap.Logger, googleService *GooglePlayService) PaymentService {
+func NewPaymentService(db *gorm.DB, cfg *config.Config, logger *zap.Logger, googleService *GooglePlayService, alipayService *AlipayService) PaymentService {
 	return &paymentServiceImpl{
 		db:            db,
 		config:        cfg,
 		logger:        logger,
 		googleService: googleService,
+		alipayService: alipayService,
 	}
 }
 
@@ -295,6 +297,11 @@ func (s *paymentServiceImpl) ProcessPayment(ctx context.Context, req *ProcessPay
 	switch req.Provider {
 	case models.PaymentProviderGooglePlay:
 		if err := s.processGooglePlayPayment(ctx, tx, order, transaction, req.PurchaseToken); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+	case models.PaymentProviderAlipay:
+		if err := s.processAlipayPayment(ctx, tx, order, transaction, req.PurchaseToken); err != nil {
 			tx.Rollback()
 			return nil, err
 		}
@@ -617,4 +624,54 @@ func (s *paymentServiceImpl) generateTransactionID() string {
 	return fmt.Sprintf("TXN%s%s",
 		time.Now().Format("20060102150405"),
 		uuid.New().String()[:8])
+}
+
+// processAlipayPayment 处理支付宝支付
+func (s *paymentServiceImpl) processAlipayPayment(ctx context.Context, tx *gorm.DB, order *models.Order, transaction *models.PaymentTransaction, authCode string) error {
+	// 创建支付宝支付记录
+	alipayPayment := &models.AlipayPayment{
+		OrderID:        order.ID,
+		OutTradeNo:     order.OrderNo,
+		TotalAmount:    fmt.Sprintf("%.2f", float64(order.TotalAmount)/100),
+		Subject:        order.Title,
+		Body:           order.Description,
+		TradeStatus:    "WAIT_BUYER_PAY",
+		AppID:          s.config.Alipay.AppID,
+		TimeoutExpress: "30m",
+	}
+
+	if err := tx.Create(alipayPayment).Error; err != nil {
+		transaction.Status = models.PaymentStatusFailed
+		transaction.ErrorMessage = &[]string{"创建支付宝支付记录失败"}[0]
+		tx.Save(transaction)
+		return fmt.Errorf("创建支付宝支付记录失败: %w", err)
+	}
+
+	// 如果是扫码支付，使用auth_code进行支付
+	if authCode != "" {
+		// 这里可以实现扫码支付逻辑
+		// 暂时将状态设为处理中，等待后续处理
+		transaction.Status = models.PaymentStatusPending
+		transaction.ProviderData = models.JSON{
+			"auth_code": authCode,
+			"payment_method": "scan_code",
+		}
+	} else {
+		// 如果是网页支付，生成支付URL
+		// 这里将状态设为待支付，等待用户完成支付
+		transaction.Status = models.PaymentStatusPending
+		transaction.ProviderData = models.JSON{
+			"payment_method": "web_page",
+			"description": "等待用户完成支付",
+		}
+	}
+
+	transaction.ProcessedAt = &time.Time{}
+	*transaction.ProcessedAt = time.Now()
+
+	if err := tx.Save(transaction).Error; err != nil {
+		return fmt.Errorf("更新交易记录失败: %w", err)
+	}
+
+	return nil
 }

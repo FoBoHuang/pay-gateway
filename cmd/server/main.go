@@ -13,11 +13,11 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"google-play-billing/internal/cache"
-	"google-play-billing/internal/config"
-	"google-play-billing/internal/database"
-	"google-play-billing/internal/routes"
-	"google-play-billing/internal/services"
+	"pay-gateway/internal/cache"
+	"pay-gateway/internal/config"
+	"pay-gateway/internal/database"
+	"pay-gateway/internal/routes"
+	"pay-gateway/internal/services"
 )
 
 func main() {
@@ -60,8 +60,14 @@ func main() {
 		logger.Fatal("初始化Google Play服务失败", zap.Error(err))
 	}
 
+	// 初始化支付宝服务
+	alipayService, err := services.NewAlipayService(db.GetDB(), &cfg.Alipay)
+	if err != nil {
+		logger.Fatal("初始化支付宝服务失败", zap.Error(err))
+	}
+
 	// 初始化支付服务
-	paymentService := services.NewPaymentService(db.GetDB(), cfg, logger, googleService)
+	paymentService := services.NewPaymentService(db.GetDB(), cfg, logger, googleService, alipayService)
 
 	// 初始化订阅服务
 	subscriptionService := services.NewSubscriptionService(db.GetDB(), cfg, logger, googleService, paymentService)
@@ -76,7 +82,7 @@ func main() {
 	routes.SetupMiddleware(router, logger)
 
 	// 设置路由
-	routes.SetupRoutes(router, paymentService, subscriptionService, googleService, logger)
+	routes.SetupRoutes(router, paymentService, subscriptionService, googleService, alipayService, db.GetDB(), logger)
 
 	// 创建HTTP服务器
 	srv := &http.Server{

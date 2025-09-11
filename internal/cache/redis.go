@@ -8,7 +8,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
-	"google-play-billing/internal/config"
+	"pay-gateway/internal/config"
 )
 
 // Redis Redis缓存客户端

@@ -5,10 +5,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 
-	"google-play-billing/internal/handlers"
-	"google-play-billing/internal/middleware"
-	"google-play-billing/internal/services"
+	"pay-gateway/internal/handlers"
+	"pay-gateway/internal/middleware"
+	"pay-gateway/internal/services"
 )
 
 // SetupRoutes 设置路由
@@ -17,16 +18,19 @@ func SetupRoutes(
 	paymentService services.PaymentService,
 	subscriptionService services.SubscriptionService,
 	googleService *services.GooglePlayService,
+	alipayService *services.AlipayService,
+	db *gorm.DB,
 	logger *zap.Logger,
 ) {
 	// 创建处理器
 	handler := handlers.NewHandler(paymentService, subscriptionService, googleService, logger)
+	alipayHandler := handlers.NewAlipayHandler(alipayService, paymentService, logger)
 
-	// 注意：这里需要传入数据库连接，实际使用时应该从依赖注入容器中获取
-	// 为了简化，这里暂时使用nil，实际使用时需要修改
+	// 创建Webhook处理器
 	webhookHandler := handlers.NewWebhookHandler(
-		nil, // 需要传入数据库连接
+		db,
 		googleService,
+		alipayService,
 		paymentService,
 		subscriptionService,
 		logger,
@@ -48,6 +52,15 @@ func SetupRoutes(
 		payments := v1.Group("/payments")
 		{
 			payments.POST("/process", handler.ProcessPayment) // 处理支付
+		}
+
+		// 支付宝相关路由
+		alipay := v1.Group("/alipay")
+		{
+			alipay.POST("/orders", alipayHandler.CreateAlipayOrder)     // 创建支付宝订单
+			alipay.POST("/payments", alipayHandler.CreateAlipayPayment) // 创建支付宝支付
+			alipay.GET("/orders/query", alipayHandler.QueryAlipayOrder) // 查询支付宝订单
+			alipay.POST("/refunds", alipayHandler.AlipayRefund)         // 支付宝退款
 		}
 
 		// 订阅相关路由
@@ -72,6 +85,7 @@ func SetupRoutes(
 	webhooks := router.Group("/webhook")
 	{
 		webhooks.POST("/google-play", webhookHandler.HandleGooglePlayWebhook) // Google Play Webhook
+		webhooks.POST("/alipay", webhookHandler.HandleAlipayWebhook)          // 支付宝 Webhook
 	}
 
 	// 系统路由

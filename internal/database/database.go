@@ -11,8 +11,8 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
-	"google-play-billing/internal/config"
-	"google-play-billing/internal/models"
+	"pay-gateway/internal/config"
+	"pay-gateway/internal/models"
 )
 
 // Database 数据库连接
