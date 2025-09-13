@@ -5,6 +5,7 @@ go 1.23
 toolchain go1.24.4
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/google/uuid v1.5.0
 	github.com/redis/go-redis/v9 v9.3.1
@@ -19,7 +20,6 @@ require (
 require (
 	cloud.google.com/go/compute v1.23.3 // indirect
 	cloud.google.com/go/compute/metadata v0.2.3 // indirect
-	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/bytedance/sonic v1.9.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
