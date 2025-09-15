@@ -50,3 +50,13 @@ cert_mode = false
 app_cert_path = "certs/appCertPublicKey.crt"
 root_cert_path = "certs/alipayRootCert.crt"
 alipay_cert_path = "certs/alipayCertPublicKey_RSA2.crt"
+
+# Apple支付配置
+[apple]
+key_id = ""                    # Apple私钥ID，从App Store Connect获取
+issuer_id = ""                 # Apple发行者ID，从App Store Connect获取
+bundle_id = "com.example.app"  # iOS应用Bundle ID
+private_key = ""               # Apple私钥内容（.p8文件内容）
+private_key_path = "certs/ApplePrivateKey.p8"  # Apple私钥文件路径（如果私钥内容为空，则从文件读取）
+sandbox = true                 # 是否使用沙盒环境（true: 沙盒，false: 生产）
+webhook_secret = ""            # Apple Webhook密钥，用于验证通知
