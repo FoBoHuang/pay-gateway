@@ -11,9 +11,9 @@ import (
 
 // AlipayHandler 支付宝处理器
 type AlipayHandler struct {
-	alipayService *services.AlipayService
+	alipayService  *services.AlipayService
 	paymentService services.PaymentService
-	logger        *zap.Logger
+	logger         *zap.Logger
 }
 
 // NewAlipayHandler 创建支付宝处理器
@@ -45,8 +45,8 @@ type CreateAlipayOrderResponse struct {
 
 // CreateAlipayPaymentRequest 创建支付宝支付请求
 type CreateAlipayPaymentRequest struct {
-	OrderNo   string `json:"order_no" binding:"required"`
-	PayType   string `json:"pay_type" binding:"required,oneof=WAP PAGE"`
+	OrderNo string `json:"order_no" binding:"required"`
+	PayType string `json:"pay_type" binding:"required,oneof=WAP PAGE"`
 }
 
 // CreateAlipayPaymentResponse 创建支付宝支付响应
@@ -57,12 +57,12 @@ type CreateAlipayPaymentResponse struct {
 
 // QueryAlipayOrderResponse 查询支付宝订单响应
 type QueryAlipayOrderResponse struct {
-	OrderNo       string                `json:"order_no"`
-	TradeNo       string                `json:"trade_no,omitempty"`
-	TradeStatus   string                `json:"trade_status"`
-	TotalAmount   int64                 `json:"total_amount"`
-	PaymentStatus string                `json:"payment_status"`
-	PaidAt        *string               `json:"paid_at,omitempty"`
+	OrderNo       string  `json:"order_no"`
+	TradeNo       string  `json:"trade_no,omitempty"`
+	TradeStatus   string  `json:"trade_status"`
+	TotalAmount   int64   `json:"total_amount"`
+	PaymentStatus string  `json:"payment_status"`
+	PaidAt        *string `json:"paid_at,omitempty"`
 }
 
 // RefundRequest 退款请求

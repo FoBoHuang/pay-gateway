@@ -10,8 +10,8 @@ import (
 	"net/url"
 	"time"
 
-	alipay "github.com/smartwalle/alipay/v3"
 	"github.com/google/uuid"
+	alipay "github.com/smartwalle/alipay/v3"
 	"gorm.io/gorm"
 
 	"pay-gateway/internal/config"
@@ -403,17 +403,17 @@ func (s *AlipayService) Refund(ctx context.Context, req *RefundRequest) (*Refund
 
 	// 创建退款记录
 	refund := &models.AlipayRefund{
-		OrderID:          order.ID,
-		AlipayPaymentID:  alipayPayment.ID,
-		OutRequestNo:     refundRequestNo,
-		OutTradeNo:       req.OrderNo,
-		TradeNo:          alipayPayment.TradeNo,
-		RefundAmount:     formatAmount(req.RefundAmount),
-		TotalAmount:      alipayPayment.TotalAmount,
-		Currency:         "CNY",
-		RefundReason:     req.RefundReason,
-		RefundStatus:     "REFUND_SUCCESS",
-		GmtRefundPay:     &[]time.Time{time.Now()}[0],
+		OrderID:         order.ID,
+		AlipayPaymentID: alipayPayment.ID,
+		OutRequestNo:    refundRequestNo,
+		OutTradeNo:      req.OrderNo,
+		TradeNo:         alipayPayment.TradeNo,
+		RefundAmount:    formatAmount(req.RefundAmount),
+		TotalAmount:     alipayPayment.TotalAmount,
+		Currency:        "CNY",
+		RefundReason:    req.RefundReason,
+		RefundStatus:    "REFUND_SUCCESS",
+		GmtRefundPay:    &[]time.Time{time.Now()}[0],
 	}
 
 	if err := tx.Create(refund).Error; err != nil {
@@ -501,12 +501,12 @@ type CreateAlipayOrderResponse struct {
 }
 
 type QueryAlipayOrderResponse struct {
-	OrderNo       string                `json:"order_no"`
-	TradeNo       string                `json:"trade_no,omitempty"`
-	TradeStatus   string                `json:"trade_status"`
-	TotalAmount   int64                 `json:"total_amount"`
-	PaymentStatus models.PaymentStatus  `json:"payment_status"`
-	PaidAt        *time.Time            `json:"paid_at,omitempty"`
+	OrderNo       string               `json:"order_no"`
+	TradeNo       string               `json:"trade_no,omitempty"`
+	TradeStatus   string               `json:"trade_status"`
+	TotalAmount   int64                `json:"total_amount"`
+	PaymentStatus models.PaymentStatus `json:"payment_status"`
+	PaidAt        *time.Time           `json:"paid_at,omitempty"`
 }
 
 type RefundRequest struct {

@@ -52,6 +52,7 @@ type PaymentMethod string
 
 const (
 	PaymentMethodGooglePlay PaymentMethod = "GOOGLE_PLAY"
+	PaymentMethodAppleStore PaymentMethod = "APPLE_STORE"
 	PaymentMethodAlipay     PaymentMethod = "ALIPAY"
 	PaymentMethodWeChat     PaymentMethod = "WECHAT"
 )
@@ -85,6 +86,7 @@ type Order struct {
 	User          User           `gorm:"foreignKey:UserID" json:"user,omitempty"`
 	GooglePayment *GooglePayment `gorm:"foreignKey:OrderID" json:"google_payment,omitempty"`
 	AlipayPayment *AlipayPayment `gorm:"foreignKey:OrderID" json:"alipay_payment,omitempty"`
+	ApplePayment  *ApplePayment  `gorm:"foreignKey:OrderID" json:"apple_payment,omitempty"`
 }
 
 // GooglePayment Google支付详情
@@ -157,54 +159,54 @@ type UserBalance struct {
 
 // AlipayPayment 支付宝支付详情
 type AlipayPayment struct {
-	ID                    uint       `gorm:"primarykey" json:"id"`
-	OrderID               uint       `gorm:"not null;uniqueIndex" json:"order_id"`                           // 订单ID
-	OutTradeNo            string     `gorm:"not null;uniqueIndex;size:64" json:"out_trade_no"`              // 商户订单号
-	TradeNo               string     `gorm:"size:64;index" json:"trade_no,omitempty"`                       // 支付宝交易号
-	BuyerUserID           string     `gorm:"size:64;index" json:"buyer_user_id,omitempty"`                  // 买家支付宝用户ID
-	BuyerLogonID          string     `gorm:"size:100" json:"buyer_logon_id,omitempty"`                      // 买家支付宝账号
-	TotalAmount           string     `gorm:"size:20" json:"total_amount"`                                   // 订单金额
-	ReceiptAmount         string     `gorm:"size:20" json:"receipt_amount,omitempty"`                       // 实收金额
-	InvoiceAmount         string     `gorm:"size:20" json:"invoice_amount,omitempty"`                       // 开票金额
-	BuyerPayAmount        string     `gorm:"size:20" json:"buyer_pay_amount,omitempty"`                     // 买家付款金额
-	PointAmount           string     `gorm:"size:20" json:"point_amount,omitempty"`                         // 积分宝金额
-	RefundFee             string     `gorm:"size:20" json:"refund_fee,omitempty"`                           // 总退款金额
-	Subject               string     `gorm:"size:256" json:"subject"`                                       // 订单标题
-	Body                  string     `gorm:"size:400" json:"body,omitempty"`                                // 订单描述
-	TradeStatus           string     `gorm:"size:32;index" json:"trade_status,omitempty"`                   // 交易状态
-	PaymentMethod         string     `gorm:"size:32" json:"payment_method,omitempty"`                       // 付款方式
-	FundBillList          JSON       `gorm:"type:jsonb" json:"fund_bill_list,omitempty"`                    // 资金明细信息
-	VoucherDetailList     JSON       `gorm:"type:jsonb" json:"voucher_detail_list,omitempty"`               // 优惠券信息
-	AuthTradePayMode      string     `gorm:"size:32" json:"auth_trade_pay_mode,omitempty"`                  // 预授权支付模式
-	CreditBizOrderID      string     `gorm:"size:64" json:"credit_biz_order_id,omitempty"`                  // 信用业务订单号
-	CreditPayMode         string     `gorm:"size:32" json:"credit_pay_mode,omitempty"`                      // 信用支付模式
-	CreditPhaseInfo       JSON       `gorm:"type:jsonb" json:"credit_phase_info,omitempty"`                 // 信用支付阶段信息
-	StoreID               string     `gorm:"size:32" json:"store_id,omitempty"`                             // 商户门店编号
-	TerminalID            string     `gorm:"size:32" json:"terminal_id,omitempty"`                          // 商户机具终端编号
-	MerchantOrderNo       string     `gorm:"size:32" json:"merchant_order_no,omitempty"`                    // 商户原始订单号
-	BusinessParams        JSON       `gorm:"type:jsonb" json:"business_params,omitempty"`                   // 商户业务参数
-	PromoParams             string     `gorm:"size:512" json:"promo_params,omitempty"`                        // 优惠参数
-	SendPayDate           *time.Time `json:"send_pay_date,omitempty"`                                        // 付款时间
-	TimeoutExpress        string     `gorm:"size:32" json:"timeout_express,omitempty"`                      // 超时时间
-	TimeEnd               *time.Time `json:"time_end,omitempty"`                                             // 交易付款时间
-	NotifyTime            *time.Time `json:"notify_time,omitempty"`                                          // 通知时间
-	NotifyType            string     `gorm:"size:64" json:"notify_type,omitempty"`                          // 通知类型
-	NotifyID              string     `gorm:"size:128" json:"notify_id,omitempty"`                           // 通知校验ID
-	AppID                 string     `gorm:"size:32;index" json:"app_id,omitempty"`                         // 应用ID
-	Charset               string     `gorm:"size:10" json:"charset,omitempty"`                              // 编码格式
-	Version               string     `gorm:"size:10" json:"version,omitempty"`                              // 接口版本
-	SignType              string     `gorm:"size:10" json:"sign_type,omitempty"`                            // 签名类型
-	Sign                  string     `gorm:"size:256" json:"sign,omitempty"`                                // 签名
-	PassbackParams        string     `gorm:"size:512" json:"passback_params,omitempty"`                     // 回传参数
-	ExtraCommonParam      string     `gorm:"size:256" json:"extra_common_param,omitempty"`                  // 公用回传参数
-	AgreementNo           string     `gorm:"size:64" json:"agreement_no,omitempty"`                         // 协议号
-	OutRequestNo          string     `gorm:"size:64" json:"out_request_no,omitempty"`                       // 外部请求号
-	OperationID           string     `gorm:"size:64" json:"operation_id,omitempty"`                         // 操作ID
-	RetryFlag             string     `gorm:"size:1" json:"retry_flag,omitempty"`                            // 重试标志
-	ErrorCode             string     `gorm:"size:32" json:"error_code,omitempty"`                           // 错误码
-	ErrorMsg              string     `gorm:"size:256" json:"error_msg,omitempty"`                           // 错误描述
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
+	ID                uint       `gorm:"primarykey" json:"id"`
+	OrderID           uint       `gorm:"not null;uniqueIndex" json:"order_id"`             // 订单ID
+	OutTradeNo        string     `gorm:"not null;uniqueIndex;size:64" json:"out_trade_no"` // 商户订单号
+	TradeNo           string     `gorm:"size:64;index" json:"trade_no,omitempty"`          // 支付宝交易号
+	BuyerUserID       string     `gorm:"size:64;index" json:"buyer_user_id,omitempty"`     // 买家支付宝用户ID
+	BuyerLogonID      string     `gorm:"size:100" json:"buyer_logon_id,omitempty"`         // 买家支付宝账号
+	TotalAmount       string     `gorm:"size:20" json:"total_amount"`                      // 订单金额
+	ReceiptAmount     string     `gorm:"size:20" json:"receipt_amount,omitempty"`          // 实收金额
+	InvoiceAmount     string     `gorm:"size:20" json:"invoice_amount,omitempty"`          // 开票金额
+	BuyerPayAmount    string     `gorm:"size:20" json:"buyer_pay_amount,omitempty"`        // 买家付款金额
+	PointAmount       string     `gorm:"size:20" json:"point_amount,omitempty"`            // 积分宝金额
+	RefundFee         string     `gorm:"size:20" json:"refund_fee,omitempty"`              // 总退款金额
+	Subject           string     `gorm:"size:256" json:"subject"`                          // 订单标题
+	Body              string     `gorm:"size:400" json:"body,omitempty"`                   // 订单描述
+	TradeStatus       string     `gorm:"size:32;index" json:"trade_status,omitempty"`      // 交易状态
+	PaymentMethod     string     `gorm:"size:32" json:"payment_method,omitempty"`          // 付款方式
+	FundBillList      JSON       `gorm:"type:jsonb" json:"fund_bill_list,omitempty"`       // 资金明细信息
+	VoucherDetailList JSON       `gorm:"type:jsonb" json:"voucher_detail_list,omitempty"`  // 优惠券信息
+	AuthTradePayMode  string     `gorm:"size:32" json:"auth_trade_pay_mode,omitempty"`     // 预授权支付模式
+	CreditBizOrderID  string     `gorm:"size:64" json:"credit_biz_order_id,omitempty"`     // 信用业务订单号
+	CreditPayMode     string     `gorm:"size:32" json:"credit_pay_mode,omitempty"`         // 信用支付模式
+	CreditPhaseInfo   JSON       `gorm:"type:jsonb" json:"credit_phase_info,omitempty"`    // 信用支付阶段信息
+	StoreID           string     `gorm:"size:32" json:"store_id,omitempty"`                // 商户门店编号
+	TerminalID        string     `gorm:"size:32" json:"terminal_id,omitempty"`             // 商户机具终端编号
+	MerchantOrderNo   string     `gorm:"size:32" json:"merchant_order_no,omitempty"`       // 商户原始订单号
+	BusinessParams    JSON       `gorm:"type:jsonb" json:"business_params,omitempty"`      // 商户业务参数
+	PromoParams       string     `gorm:"size:512" json:"promo_params,omitempty"`           // 优惠参数
+	SendPayDate       *time.Time `json:"send_pay_date,omitempty"`                          // 付款时间
+	TimeoutExpress    string     `gorm:"size:32" json:"timeout_express,omitempty"`         // 超时时间
+	TimeEnd           *time.Time `json:"time_end,omitempty"`                               // 交易付款时间
+	NotifyTime        *time.Time `json:"notify_time,omitempty"`                            // 通知时间
+	NotifyType        string     `gorm:"size:64" json:"notify_type,omitempty"`             // 通知类型
+	NotifyID          string     `gorm:"size:128" json:"notify_id,omitempty"`              // 通知校验ID
+	AppID             string     `gorm:"size:32;index" json:"app_id,omitempty"`            // 应用ID
+	Charset           string     `gorm:"size:10" json:"charset,omitempty"`                 // 编码格式
+	Version           string     `gorm:"size:10" json:"version,omitempty"`                 // 接口版本
+	SignType          string     `gorm:"size:10" json:"sign_type,omitempty"`               // 签名类型
+	Sign              string     `gorm:"size:256" json:"sign,omitempty"`                   // 签名
+	PassbackParams    string     `gorm:"size:512" json:"passback_params,omitempty"`        // 回传参数
+	ExtraCommonParam  string     `gorm:"size:256" json:"extra_common_param,omitempty"`     // 公用回传参数
+	AgreementNo       string     `gorm:"size:64" json:"agreement_no,omitempty"`            // 协议号
+	OutRequestNo      string     `gorm:"size:64" json:"out_request_no,omitempty"`          // 外部请求号
+	OperationID       string     `gorm:"size:64" json:"operation_id,omitempty"`            // 操作ID
+	RetryFlag         string     `gorm:"size:1" json:"retry_flag,omitempty"`               // 重试标志
+	ErrorCode         string     `gorm:"size:32" json:"error_code,omitempty"`              // 错误码
+	ErrorMsg          string     `gorm:"size:256" json:"error_msg,omitempty"`              // 错误描述
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 
 	// 关联
 	Order Order `gorm:"foreignKey:OrderID" json:"order,omitempty"`
@@ -212,32 +214,32 @@ type AlipayPayment struct {
 
 // AlipayRefund 支付宝退款记录
 type AlipayRefund struct {
-	ID               uint       `gorm:"primarykey" json:"id"`
-	OrderID          uint       `gorm:"not null;index" json:"order_id"`                      // 订单ID
-	AlipayPaymentID  uint       `gorm:"not null;index" json:"alipay_payment_id"`             // 支付宝支付记录ID
-	OutRequestNo     string     `gorm:"not null;uniqueIndex;size:64" json:"out_request_no"` // 退款请求号
-	OutTradeNo       string     `gorm:"not null;index;size:64" json:"out_trade_no"`         // 商户订单号
-	TradeNo          string     `gorm:"size:64;index" json:"trade_no,omitempty"`            // 支付宝交易号
-	RefundAmount     string     `gorm:"not null;size:20" json:"refund_amount"`              // 退款金额
-	TotalAmount      string     `gorm:"size:20" json:"total_amount,omitempty"`              // 订单金额
-	Currency         string     `gorm:"size:3" json:"currency,omitempty"`                   // 币种
-	RefundReason     string     `gorm:"size:256" json:"refund_reason,omitempty"`            // 退款原因
-	RefundStatus     string     `gorm:"size:32;index" json:"refund_status,omitempty"`       // 退款状态
-	RefundCurrency   string     `gorm:"size:3" json:"refund_currency,omitempty"`            // 退款币种
-	GmtRefundPay     *time.Time `json:"gmt_refund_pay,omitempty"`                            // 退款支付时间
-	PresentRefundBuyerAmount string `gorm:"size:20" json:"present_refund_buyer_amount,omitempty"` // 退回买家的金额
-	PresentRefundDiscountAmount string `gorm:"size:20" json:"present_refund_discount_amount,omitempty"` // 退回优惠金额
-	PresentRefundMdiscountAmount string `gorm:"size:20" json:"present_refund_mdiscount_amount,omitempty"` // 退回商家优惠金额
-	HasDepositBack   string     `gorm:"size:1" json:"has_deposit_back,omitempty"`           // 是否有银行卡冲退
-	DepositBackInfo  JSON       `gorm:"type:jsonb" json:"deposit_back_info,omitempty"`      // 银行卡冲退信息
-	RefundChargeInfo JSON      `gorm:"type:jsonb" json:"refund_charge_info,omitempty"`     // 退款手续费信息
-	ErrorCode        string     `gorm:"size:32" json:"error_code,omitempty"`                // 错误码
-	ErrorMsg         string     `gorm:"size:256" json:"error_msg,omitempty"`                // 错误描述
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ID                           uint       `gorm:"primarykey" json:"id"`
+	OrderID                      uint       `gorm:"not null;index" json:"order_id"`                           // 订单ID
+	AlipayPaymentID              uint       `gorm:"not null;index" json:"alipay_payment_id"`                  // 支付宝支付记录ID
+	OutRequestNo                 string     `gorm:"not null;uniqueIndex;size:64" json:"out_request_no"`       // 退款请求号
+	OutTradeNo                   string     `gorm:"not null;index;size:64" json:"out_trade_no"`               // 商户订单号
+	TradeNo                      string     `gorm:"size:64;index" json:"trade_no,omitempty"`                  // 支付宝交易号
+	RefundAmount                 string     `gorm:"not null;size:20" json:"refund_amount"`                    // 退款金额
+	TotalAmount                  string     `gorm:"size:20" json:"total_amount,omitempty"`                    // 订单金额
+	Currency                     string     `gorm:"size:3" json:"currency,omitempty"`                         // 币种
+	RefundReason                 string     `gorm:"size:256" json:"refund_reason,omitempty"`                  // 退款原因
+	RefundStatus                 string     `gorm:"size:32;index" json:"refund_status,omitempty"`             // 退款状态
+	RefundCurrency               string     `gorm:"size:3" json:"refund_currency,omitempty"`                  // 退款币种
+	GmtRefundPay                 *time.Time `json:"gmt_refund_pay,omitempty"`                                 // 退款支付时间
+	PresentRefundBuyerAmount     string     `gorm:"size:20" json:"present_refund_buyer_amount,omitempty"`     // 退回买家的金额
+	PresentRefundDiscountAmount  string     `gorm:"size:20" json:"present_refund_discount_amount,omitempty"`  // 退回优惠金额
+	PresentRefundMdiscountAmount string     `gorm:"size:20" json:"present_refund_mdiscount_amount,omitempty"` // 退回商家优惠金额
+	HasDepositBack               string     `gorm:"size:1" json:"has_deposit_back,omitempty"`                 // 是否有银行卡冲退
+	DepositBackInfo              JSON       `gorm:"type:jsonb" json:"deposit_back_info,omitempty"`            // 银行卡冲退信息
+	RefundChargeInfo             JSON       `gorm:"type:jsonb" json:"refund_charge_info,omitempty"`           // 退款手续费信息
+	ErrorCode                    string     `gorm:"size:32" json:"error_code,omitempty"`                      // 错误码
+	ErrorMsg                     string     `gorm:"size:256" json:"error_msg,omitempty"`                      // 错误描述
+	CreatedAt                    time.Time  `json:"created_at"`
+	UpdatedAt                    time.Time  `json:"updated_at"`
 
 	// 关联
-	Order        Order        `gorm:"foreignKey:OrderID" json:"order,omitempty"`
+	Order         Order         `gorm:"foreignKey:OrderID" json:"order,omitempty"`
 	AlipayPayment AlipayPayment `gorm:"foreignKey:AlipayPaymentID" json:"alipay_payment,omitempty"`
 }
 
@@ -247,4 +249,74 @@ type JSON map[string]interface{}
 // TableName 设置表名
 func (JSON) GormDataType() string {
 	return "jsonb"
+}
+
+// ApplePayment Apple支付详情
+type ApplePayment struct {
+	ID                        uint       `gorm:"primarykey" json:"id"`
+	OrderID                   uint       `gorm:"not null;uniqueIndex" json:"order_id"`                   // 订单ID
+	TransactionID             string     `gorm:"not null;uniqueIndex;size:255" json:"transaction_id"`    // Apple交易ID
+	OriginalTransactionID     string     `gorm:"not null;index;size:255" json:"original_transaction_id"` // 原始交易ID（订阅）
+	ProductIDApple            string     `gorm:"not null;index;size:100" json:"product_id_apple"`        // Apple商品ID
+	BundleID                  string     `gorm:"not null;size:100" json:"bundle_id"`                     // Bundle ID
+	Quantity                  int        `json:"quantity"`                                               // 数量
+	PurchaseDate              *time.Time `json:"purchase_date,omitempty"`                                // 购买时间
+	OriginalPurchaseDate      *time.Time `json:"original_purchase_date,omitempty"`                       // 原始购买时间
+	ExpiresDate               *time.Time `json:"expires_date,omitempty"`                                 // 到期时间（订阅）
+	CancellationDate          *time.Time `json:"cancellation_date,omitempty"`                            // 取消时间
+	IsTrialPeriod             *bool      `json:"is_trial_period,omitempty"`                              // 是否为试用期
+	IsInIntroOfferPeriod      *bool      `json:"is_in_intro_offer_period,omitempty"`                     // 是否为介绍期
+	SubscriptionGroupID       string     `gorm:"size:100" json:"subscription_group_id,omitempty"`        // 订阅组ID
+	ProductType               string     `gorm:"size:50" json:"product_type,omitempty"`                  // 产品类型（AUTO_RENEWABLE, CONSUMABLE等）
+	InAppOwnershipType        string     `gorm:"size:50" json:"in_app_ownership_type,omitempty"`         // 所有权类型
+	WebOrderLineItemID        string     `gorm:"size:100" json:"web_order_line_item_id,omitempty"`       // Web订单行项目ID
+	PromotionalOfferID        string     `gorm:"size:100" json:"promotional_offer_id,omitempty"`         // 促销优惠ID
+	Price                     int64      `json:"price,omitempty"`                                        // 价格（微单位）
+	Currency                  string     `gorm:"size:3" json:"currency,omitempty"`                       // 货币代码
+	CountryCode               string     `gorm:"size:10" json:"country_code,omitempty"`                  // 国家代码
+	Environment               string     `gorm:"size:20" json:"environment,omitempty"`                   // 环境（Sandbox/Production）
+	ReceiptData               string     `gorm:"type:text" json:"receipt_data,omitempty"`                // 收据数据
+	SignedTransactionInfo     string     `gorm:"type:text" json:"signed_transaction_info,omitempty"`     // 签名交易信息
+	SignedRenewalInfo         string     `gorm:"type:text" json:"signed_renewal_info,omitempty"`         // 签名续订信息
+	AppAccountToken           string     `gorm:"size:100" json:"app_account_token,omitempty"`            // 应用账户令牌
+	OfferDiscountType         string     `gorm:"size:50" json:"offer_discount_type,omitempty"`           // 优惠折扣类型
+	OfferType                 string     `gorm:"size:50" json:"offer_type,omitempty"`                    // 优惠类型
+	RevocationDate            *time.Time `json:"revocation_date,omitempty"`                              // 撤销日期
+	RevocationReason          string     `gorm:"size:100" json:"revocation_reason,omitempty"`            // 撤销原因
+	GracePeriodExpirationDate *time.Time `json:"grace_period_expiration_date,omitempty"`                 // 宽限期到期时间
+	IsUpgraded                *bool      `json:"is_upgraded,omitempty"`                                  // 是否已升级
+	AutoRenewStatus           *bool      `json:"auto_renew_status,omitempty"`                            // 自动续订状态
+	AutoRenewProductID        string     `gorm:"size:100" json:"auto_renew_product_id,omitempty"`        // 自动续订产品ID
+	GracePeriodStatus         string     `gorm:"size:50" json:"grace_period_status,omitempty"`           // 宽限期状态
+	ExpirationIntent          string     `gorm:"size:100" json:"expiration_intent,omitempty"`            // 到期意图
+	RawReceiptData            JSON       `gorm:"type:jsonb" json:"raw_receipt_data,omitempty"`           // 原始收据数据
+	Status                    string     `gorm:"size:50;index" json:"status"`                            // 状态
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
+
+	// 关联
+	Order Order `gorm:"foreignKey:OrderID" json:"order,omitempty"`
+}
+
+// AppleRefund Apple退款记录
+type AppleRefund struct {
+	ID                    uint       `gorm:"primarykey" json:"id"`
+	OrderID               uint       `gorm:"not null;index" json:"order_id"`                             // 订单ID
+	ApplePaymentID        uint       `gorm:"not null;index" json:"apple_payment_id"`                     // Apple支付记录ID
+	RefundTransactionID   string     `gorm:"not null;uniqueIndex;size:255" json:"refund_transaction_id"` // 退款交易ID
+	OriginalTransactionID string     `gorm:"not null;index;size:255" json:"original_transaction_id"`     // 原始交易ID
+	RefundAmount          int64      `json:"refund_amount"`                                              // 退款金额
+	Currency              string     `gorm:"size:3" json:"currency"`                                     // 货币代码
+	RefundReason          string     `gorm:"size:500" json:"refund_reason,omitempty"`                    // 退款原因
+	RefundDate            *time.Time `json:"refund_date,omitempty"`                                      // 退款时间
+	RefundStatus          string     `gorm:"size:50;index" json:"refund_status"`                         // 退款状态
+	RawRefundData         JSON       `gorm:"type:jsonb" json:"raw_refund_data,omitempty"`                // 原始退款数据
+	ErrorCode             string     `gorm:"size:50" json:"error_code,omitempty"`                        // 错误代码
+	ErrorMessage          string     `gorm:"size:500" json:"error_message,omitempty"`                    // 错误信息
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+
+	// 关联
+	Order        Order        `gorm:"foreignKey:OrderID" json:"order,omitempty"`
+	ApplePayment ApplePayment `gorm:"foreignKey:ApplePaymentID" json:"apple_payment,omitempty"`
 }

@@ -61,16 +61,18 @@ type paymentServiceImpl struct {
 	logger        *zap.Logger
 	googleService *GooglePlayService
 	alipayService *AlipayService
+	appleService  *AppleService
 }
 
 // NewPaymentService 创建支付服务
-func NewPaymentService(db *gorm.DB, cfg *config.Config, logger *zap.Logger, googleService *GooglePlayService, alipayService *AlipayService) PaymentService {
+func NewPaymentService(db *gorm.DB, cfg *config.Config, logger *zap.Logger, googleService *GooglePlayService, alipayService *AlipayService, appleService *AppleService) PaymentService {
 	return &paymentServiceImpl{
 		db:            db,
 		config:        cfg,
 		logger:        logger,
 		googleService: googleService,
 		alipayService: alipayService,
+		appleService:  appleService,
 	}
 }
 
@@ -653,7 +655,7 @@ func (s *paymentServiceImpl) processAlipayPayment(ctx context.Context, tx *gorm.
 		// 暂时将状态设为处理中，等待后续处理
 		transaction.Status = models.PaymentStatusPending
 		transaction.ProviderData = models.JSON{
-			"auth_code": authCode,
+			"auth_code":      authCode,
 			"payment_method": "scan_code",
 		}
 	} else {
@@ -662,7 +664,7 @@ func (s *paymentServiceImpl) processAlipayPayment(ctx context.Context, tx *gorm.
 		transaction.Status = models.PaymentStatusPending
 		transaction.ProviderData = models.JSON{
 			"payment_method": "web_page",
-			"description": "等待用户完成支付",
+			"description":    "等待用户完成支付",
 		}
 	}
 

@@ -19,18 +19,27 @@ func SetupRoutes(
 	subscriptionService services.SubscriptionService,
 	googleService *services.GooglePlayService,
 	alipayService *services.AlipayService,
+	appleService *services.AppleService,
 	db *gorm.DB,
 	logger *zap.Logger,
 ) {
 	// 创建处理器
 	handler := handlers.NewHandler(paymentService, subscriptionService, googleService, logger)
 	alipayHandler := handlers.NewAlipayHandler(alipayService, paymentService, logger)
+	appleHandler := handlers.NewAppleHandler(appleService, paymentService, subscriptionService, logger)
 
 	// 创建Webhook处理器
 	webhookHandler := handlers.NewWebhookHandler(
 		db,
 		googleService,
 		alipayService,
+		paymentService,
+		subscriptionService,
+		logger,
+	)
+	appleWebhookHandler := handlers.NewAppleWebhookHandler(
+		db,
+		appleService,
 		paymentService,
 		subscriptionService,
 		logger,
@@ -63,6 +72,16 @@ func SetupRoutes(
 			alipay.POST("/refunds", alipayHandler.AlipayRefund)         // 支付宝退款
 		}
 
+		// Apple相关路由
+		apple := v1.Group("/apple")
+		{
+			apple.POST("/verify-receipt", appleHandler.VerifyReceipt)                                       // 验证Apple收据
+			apple.POST("/verify-transaction", appleHandler.VerifyTransaction)                               // 验证Apple交易
+			apple.POST("/validate-receipt", appleHandler.ValidateReceipt)                                   // 验证Apple收据（简化版本）
+			apple.GET("/transactions/:original_transaction_id/history", appleHandler.GetTransactionHistory) // 获取交易历史
+			apple.GET("/subscriptions/:original_transaction_id/status", appleHandler.GetSubscriptionStatus) // 获取订阅状态
+		}
+
 		// 订阅相关路由
 		subscriptions := v1.Group("/subscriptions")
 		{
@@ -86,6 +105,7 @@ func SetupRoutes(
 	{
 		webhooks.POST("/google-play", webhookHandler.HandleGooglePlayWebhook) // Google Play Webhook
 		webhooks.POST("/alipay", webhookHandler.HandleAlipayWebhook)          // 支付宝 Webhook
+		webhooks.POST("/apple", appleWebhookHandler.HandleAppleWebhook)       // Apple Webhook
 	}
 
 	// 系统路由

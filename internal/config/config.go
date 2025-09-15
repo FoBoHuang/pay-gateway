@@ -17,6 +17,7 @@ type Config struct {
 	Google   GoogleConfig   // Google Play配置
 	JWT      JWTConfig      // JWT认证配置
 	Alipay   AlipayConfig   // 支付宝配置
+	Apple    AppleConfig    // Apple Store配置
 }
 
 // ServerConfig 服务器配置参数
@@ -80,20 +81,31 @@ type AlipayConfig struct {
 	AlipayCertPath string // 支付宝公钥证书路径
 }
 
+// AppleConfig Apple Store配置
+type AppleConfig struct {
+	KeyID          string // Apple私钥ID，从App Store Connect获取
+	IssuerID       string // Apple发行者ID，从App Store Connect获取
+	BundleID       string // iOS应用Bundle ID
+	PrivateKey     string // Apple私钥内容（.p8文件内容）
+	PrivateKeyPath string // Apple私钥文件路径（如果私钥内容为空，则从文件读取）
+	Sandbox        bool   // 是否使用沙盒环境
+	WebhookSecret  string // Apple Webhook密钥，用于验证通知
+}
+
 // Load 从配置文件加载配置，支持环境变量覆盖
 // 首先尝试加载config.toml文件，然后环境变量可以覆盖文件中的配置
 func Load() *Config {
 	config := &Config{}
-	
+
 	// 尝试从配置文件加载
 	if err := loadFromFile(config); err != nil {
 		log.Printf("配置文件加载失败: %v, 使用默认配置", err)
 		config = loadDefaults()
 	}
-	
+
 	// 环境变量可以覆盖配置文件中的设置
 	config.applyEnvOverrides()
-	
+
 	return config
 }
 
@@ -101,15 +113,15 @@ func Load() *Config {
 func loadFromFile(config *Config) error {
 	// 尝试多个路径加载配置文件
 	configPaths := []string{
-		"configs/config.toml",                    // 项目configs目录
-		"config.toml",                            // 项目根目录（向后兼容）
-		"../configs/config.toml",                 // 上一级configs目录
-		"../config.toml",                         // 上一级目录
-		"../../configs/config.toml",              // 上两级configs目录
-		"../../config.toml",                      // 上两级目录
-		"/etc/pay-gateway/config.toml",           // 系统配置目录
+		"configs/config.toml",          // 项目configs目录
+		"config.toml",                  // 项目根目录（向后兼容）
+		"../configs/config.toml",       // 上一级configs目录
+		"../config.toml",               // 上一级目录
+		"../../configs/config.toml",    // 上两级configs目录
+		"../../config.toml",            // 上两级目录
+		"/etc/pay-gateway/config.toml", // 系统配置目录
 	}
-	
+
 	for _, path := range configPaths {
 		if _, err := os.Stat(path); err == nil {
 			if _, err := toml.DecodeFile(path, config); err != nil {
@@ -119,7 +131,7 @@ func loadFromFile(config *Config) error {
 			return nil
 		}
 	}
-	
+
 	return os.ErrNotExist
 }
 
@@ -170,6 +182,15 @@ func loadDefaults() *Config {
 			RootCertPath:   "certs/alipayRootCert.crt",
 			AlipayCertPath: "certs/alipayCertPublicKey_RSA2.crt",
 		},
+		Apple: AppleConfig{
+			KeyID:          "",
+			IssuerID:       "",
+			BundleID:       "com.example.app",
+			PrivateKey:     "",
+			PrivateKeyPath: "",
+			Sandbox:        false,
+			WebhookSecret:  "",
+		},
 	}
 }
 
@@ -188,7 +209,7 @@ func (c *Config) applyEnvOverrides() {
 	if writeTimeout := getDuration("SERVER_WRITE_TIMEOUT", 0); writeTimeout > 0 {
 		c.Server.WriteTimeout = writeTimeout
 	}
-	
+
 	// 数据库配置覆盖
 	if host := os.Getenv("DB_HOST"); host != "" {
 		c.Database.Host = host
@@ -214,7 +235,7 @@ func (c *Config) applyEnvOverrides() {
 	if maxOpenConns := getInt("DB_MAX_OPEN_CONNS", 0); maxOpenConns > 0 {
 		c.Database.MaxOpenConns = maxOpenConns
 	}
-	
+
 	// Redis配置覆盖
 	if host := os.Getenv("REDIS_HOST"); host != "" {
 		c.Redis.Host = host
@@ -234,7 +255,7 @@ func (c *Config) applyEnvOverrides() {
 	if minIdleConns := getInt("REDIS_MIN_IDLE_CONNS", 0); minIdleConns > 0 {
 		c.Redis.MinIdleConns = minIdleConns
 	}
-	
+
 	// Google配置覆盖
 	if serviceAccountFile := os.Getenv("GOOGLE_SERVICE_ACCOUNT_FILE"); serviceAccountFile != "" {
 		c.Google.ServiceAccountFile = serviceAccountFile
@@ -245,7 +266,7 @@ func (c *Config) applyEnvOverrides() {
 	if webhookSecret := os.Getenv("GOOGLE_WEBHOOK_SECRET"); webhookSecret != "" {
 		c.Google.WebhookSecret = webhookSecret
 	}
-	
+
 	// JWT配置覆盖
 	if secret := os.Getenv("JWT_SECRET"); secret != "" {
 		c.JWT.Secret = secret
@@ -253,7 +274,7 @@ func (c *Config) applyEnvOverrides() {
 	if expireTime := getDuration("JWT_EXPIRE_TIME", 0); expireTime > 0 {
 		c.JWT.ExpireTime = expireTime
 	}
-	
+
 	// 支付宝配置覆盖
 	if appID := os.Getenv("ALIPAY_APP_ID"); appID != "" {
 		c.Alipay.AppID = appID
@@ -281,6 +302,29 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if alipayCertPath := os.Getenv("ALIPAY_PUBLIC_CERT_PATH"); alipayCertPath != "" {
 		c.Alipay.AlipayCertPath = alipayCertPath
+	}
+
+	// Apple配置覆盖
+	if keyID := os.Getenv("APPLE_KEY_ID"); keyID != "" {
+		c.Apple.KeyID = keyID
+	}
+	if issuerID := os.Getenv("APPLE_ISSUER_ID"); issuerID != "" {
+		c.Apple.IssuerID = issuerID
+	}
+	if bundleID := os.Getenv("APPLE_BUNDLE_ID"); bundleID != "" {
+		c.Apple.BundleID = bundleID
+	}
+	if privateKey := os.Getenv("APPLE_PRIVATE_KEY"); privateKey != "" {
+		c.Apple.PrivateKey = privateKey
+	}
+	if privateKeyPath := os.Getenv("APPLE_PRIVATE_KEY_PATH"); privateKeyPath != "" {
+		c.Apple.PrivateKeyPath = privateKeyPath
+	}
+	if sandbox := os.Getenv("APPLE_SANDBOX"); sandbox != "" {
+		c.Apple.Sandbox = sandbox == "true"
+	}
+	if webhookSecret := os.Getenv("APPLE_WEBHOOK_SECRET"); webhookSecret != "" {
+		c.Apple.WebhookSecret = webhookSecret
 	}
 }
 

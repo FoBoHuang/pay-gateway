@@ -19,10 +19,10 @@ import (
 // GooglePlayService Google Play服务核心结构体
 // 负责处理所有Google Play相关的支付验证、订阅管理和Webhook处理
 type GooglePlayService struct {
-	config      *config.Config        // 应用配置
-	logger      *zap.Logger           // 日志记录器
+	config      *config.Config            // 应用配置
+	logger      *zap.Logger               // 日志记录器
 	service     *androidpublisher.Service // Google Play Android Publisher API服务
-	packageName string                // Android应用包名
+	packageName string                    // Android应用包名
 }
 
 // PurchaseResponse 购买验证响应结构体
@@ -73,6 +73,7 @@ type SubscriptionResponse struct {
 // 参数：
 //   - cfg: 应用配置
 //   - logger: 日志记录器
+//
 // 返回：GooglePlayService实例或错误
 func NewGooglePlayService(cfg *config.Config, logger *zap.Logger) (*GooglePlayService, error) {
 	ctx := context.Background()
@@ -111,6 +112,7 @@ func NewGooglePlayService(cfg *config.Config, logger *zap.Logger) (*GooglePlaySe
 //   - ctx: 上下文
 //   - productID: Google Play商品ID
 //   - purchaseToken: 购买令牌
+//
 // 返回：购买详情或错误
 func (s *GooglePlayService) VerifyPurchase(ctx context.Context, productID, purchaseToken string) (*PurchaseResponse, error) {
 	purchase, err := s.service.Purchases.Products.Get(s.packageName, productID, purchaseToken).Context(ctx).Do()
@@ -150,6 +152,7 @@ func (s *GooglePlayService) VerifyPurchase(ctx context.Context, productID, purch
 //   - ctx: 上下文
 //   - subscriptionID: 订阅商品ID
 //   - purchaseToken: 购买令牌
+//
 // 返回：订阅详情或错误
 func (s *GooglePlayService) VerifySubscription(ctx context.Context, subscriptionID, purchaseToken string) (*SubscriptionResponse, error) {
 	subscription, err := s.service.Purchases.Subscriptions.Get(s.packageName, subscriptionID, purchaseToken).Context(ctx).Do()
@@ -209,6 +212,7 @@ func (s *GooglePlayService) VerifySubscription(ctx context.Context, subscription
 //   - productID: 商品ID
 //   - purchaseToken: 购买令牌
 //   - developerPayload: 开发者自定义数据
+//
 // 返回：错误或nil
 func (s *GooglePlayService) AcknowledgePurchase(ctx context.Context, productID, purchaseToken string, developerPayload string) error {
 	acknowledgeRequest := &androidpublisher.ProductPurchasesAcknowledgeRequest{
@@ -238,6 +242,7 @@ func (s *GooglePlayService) AcknowledgePurchase(ctx context.Context, productID, 
 //   - subscriptionID: 订阅商品ID
 //   - purchaseToken: 购买令牌
 //   - developerPayload: 开发者自定义数据
+//
 // 返回：错误或nil
 func (s *GooglePlayService) AcknowledgeSubscription(ctx context.Context, subscriptionID, purchaseToken string, developerPayload string) error {
 	acknowledgeRequest := &androidpublisher.SubscriptionPurchasesAcknowledgeRequest{
@@ -266,6 +271,7 @@ func (s *GooglePlayService) AcknowledgeSubscription(ctx context.Context, subscri
 //   - ctx: 上下文
 //   - productID: 商品ID
 //   - purchaseToken: 购买令牌
+//
 // 返回：错误或nil
 func (s *GooglePlayService) ConsumePurchase(ctx context.Context, productID, purchaseToken string) error {
 
@@ -298,6 +304,7 @@ func getInt64Value(val *int64) int64 {
 // 参数：
 //   - payload: 请求体数据
 //   - signature: 请求签名
+//
 // 返回：错误或nil
 func (s *GooglePlayService) VerifyWebhookSignature(payload []byte, signature string) error {
 	decodedSignature, err := base64.StdEncoding.DecodeString(signature)
@@ -335,6 +342,7 @@ func millisToTime(millis string) (time.Time, error) {
 // 参数：
 //   - subscription: 订阅信息
 //   - currentTime: 当前时间
+//
 // 返回：订阅状态枚举值
 func GetSubscriptionStatus(subscription *SubscriptionResponse, currentTime time.Time) models.SubscriptionState {
 	expiryTime, _ := millisToTime(subscription.ExpiryTimeMillis)
@@ -372,6 +380,7 @@ func GetSubscriptionStatus(subscription *SubscriptionResponse, currentTime time.
 // 将JSON格式的Webhook数据解析为WebhookEvent结构体
 // 参数：
 //   - payload: JSON格式的Webhook数据
+//
 // 返回：解析后的Webhook事件或错误
 func ParseWebhookPayload(payload []byte) (*models.WebhookEvent, error) {
 	var event models.WebhookEvent

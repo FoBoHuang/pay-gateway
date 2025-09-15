@@ -66,8 +66,14 @@ func main() {
 		logger.Fatal("初始化支付宝服务失败", zap.Error(err))
 	}
 
+	// 初始化Apple服务
+	appleService, err := services.NewAppleService(cfg, logger, db.GetDB())
+	if err != nil {
+		logger.Fatal("初始化Apple服务失败", zap.Error(err))
+	}
+
 	// 初始化支付服务
-	paymentService := services.NewPaymentService(db.GetDB(), cfg, logger, googleService, alipayService)
+	paymentService := services.NewPaymentService(db.GetDB(), cfg, logger, googleService, alipayService, appleService)
 
 	// 初始化订阅服务
 	subscriptionService := services.NewSubscriptionService(db.GetDB(), cfg, logger, googleService, paymentService)
@@ -82,7 +88,7 @@ func main() {
 	routes.SetupMiddleware(router, logger)
 
 	// 设置路由
-	routes.SetupRoutes(router, paymentService, subscriptionService, googleService, alipayService, db.GetDB(), logger)
+	routes.SetupRoutes(router, paymentService, subscriptionService, googleService, alipayService, appleService, db.GetDB(), logger)
 
 	// 创建HTTP服务器
 	srv := &http.Server{
