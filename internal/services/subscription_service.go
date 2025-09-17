@@ -37,20 +37,23 @@ type SubscriptionService interface {
 
 // CreateSubscriptionRequest 创建订阅请求
 type CreateSubscriptionRequest struct {
-	UserID           uint   `json:"user_id" binding:"required"`
-	ProductID        string `json:"product_id" binding:"required"`
-	Title            string `json:"title" binding:"required"`
-	Description      string `json:"description"`
-	Currency         string `json:"currency" binding:"required,len=3"`
-	Price            int64  `json:"price" binding:"required,min=0"`
-	Period           string `json:"period" binding:"required"` // 订阅周期，如 "P1M", "P1Y"
-	DeveloperPayload string `json:"developer_payload"`
+	UserID           uint                `json:"user_id" binding:"required"`
+	ProductID        string              `json:"product_id" binding:"required"`
+	Title            string              `json:"title" binding:"required"`
+	Description      string              `json:"description"`
+	Currency         string              `json:"currency" binding:"required,len=3"`
+	Price            int64               `json:"price" binding:"required,min=0"`
+	Period           string              `json:"period" binding:"required"` // 订阅周期，如 "P1M", "P1Y"
+	PaymentMethod    models.PaymentMethod `json:"payment_method" binding:"required"`
+	DeveloperPayload string              `json:"developer_payload"`
 }
 
 // SubscriptionInfo 订阅信息
 type SubscriptionInfo struct {
 	Order              *models.Order            `json:"order"`
 	GooglePayment      *models.GooglePayment    `json:"google_payment,omitempty"`
+	ApplePayment       *models.ApplePayment     `json:"apple_payment,omitempty"`
+	AlipayPayment      *models.AlipayPayment    `json:"alipay_payment,omitempty"`
 	CurrentStatus      models.SubscriptionState `json:"current_status"`
 	StartTime          time.Time                `json:"start_time"`
 	ExpiryTime         time.Time                `json:"expiry_time"`
@@ -113,7 +116,7 @@ func (s *subscriptionServiceImpl) CreateSubscription(ctx context.Context, req *C
 		Quantity:         1, // 订阅数量固定为1
 		Currency:         req.Currency,
 		TotalAmount:      req.Price,
-		PaymentMethod:    models.PaymentMethodGooglePlay,
+		PaymentMethod:    req.PaymentMethod,
 		DeveloperPayload: req.DeveloperPayload,
 	}
 
@@ -144,58 +147,129 @@ func (s *subscriptionServiceImpl) GetSubscription(ctx context.Context, orderID u
 		return nil, fmt.Errorf("订单不是订阅类型: %s", order.Type)
 	}
 
-	// 获取Google支付详情
+	// 获取支付详情（根据订单的支付方式）
 	var googlePayment *models.GooglePayment
+	var applePayment *models.ApplePayment
+	var alipayPayment *models.AlipayPayment
+
 	if order.GooglePayment != nil {
 		googlePayment = order.GooglePayment
+	} else if order.ApplePayment != nil {
+		applePayment = order.ApplePayment
+	} else if order.AlipayPayment != nil {
+		alipayPayment = order.AlipayPayment
 	}
 
 	// 计算订阅状态
-	currentStatus := s.determineSubscriptionStatus(googlePayment)
+	currentStatus := s.determineSubscriptionStatus(googlePayment, applePayment, alipayPayment)
 
 	// 构建订阅信息
 	info := &SubscriptionInfo{
 		Order:         order,
 		GooglePayment: googlePayment,
+		ApplePayment:  applePayment,
+		AlipayPayment: alipayPayment,
 		CurrentStatus: currentStatus,
 	}
 
 	// 设置时间和状态信息
 	if googlePayment != nil {
-		// 开始时间
-		if purchaseTime, err := time.Parse(time.RFC3339, googlePayment.PurchaseTimeMillis); err == nil {
-			info.StartTime = purchaseTime
-		}
-
-		// 到期时间
-		if expiryTime, err := time.Parse(time.RFC3339, googlePayment.ExpiryTimeMillis); err == nil {
-			info.ExpiryTime = expiryTime
-
-			// 计算下次计费时间（如果自动续订）
-			if googlePayment.AutoRenewing != nil && *googlePayment.AutoRenewing {
-				nextBilling := info.ExpiryTime
-				info.NextBillingTime = &nextBilling
-			}
-		}
-
-		// 自动续订状态
-		if googlePayment.AutoRenewing != nil {
-			info.AutoRenewing = *googlePayment.AutoRenewing
-		}
-
-		// 宽限期结束时间
-		if googlePayment.GracePeriodExpiryTime != nil {
-			info.GracePeriodEndTime = googlePayment.GracePeriodExpiryTime
-		}
-
-		// 取消原因
-		if googlePayment.CancelReason != nil {
-			reason := fmt.Sprintf("Cancel reason: %d", *googlePayment.CancelReason)
-			info.CancelReason = &reason
-		}
+		s.setGooglePaymentInfo(info, googlePayment)
+	} else if applePayment != nil {
+		s.setApplePaymentInfo(info, applePayment)
+	} else if alipayPayment != nil {
+		s.setAlipayPaymentInfo(info, alipayPayment)
 	}
 
 	return info, nil
+}
+
+// setGooglePaymentInfo 设置Google支付信息
+func (s *subscriptionServiceImpl) setGooglePaymentInfo(info *SubscriptionInfo, googlePayment *models.GooglePayment) {
+	// 开始时间
+	if purchaseTime, err := time.Parse(time.RFC3339, googlePayment.PurchaseTimeMillis); err == nil {
+		info.StartTime = purchaseTime
+	}
+
+	// 到期时间
+	if expiryTime, err := time.Parse(time.RFC3339, googlePayment.ExpiryTimeMillis); err == nil {
+		info.ExpiryTime = expiryTime
+
+		// 计算下次计费时间（如果自动续订）
+		if googlePayment.AutoRenewing != nil && *googlePayment.AutoRenewing {
+			nextBilling := info.ExpiryTime
+			info.NextBillingTime = &nextBilling
+		}
+	}
+
+	// 自动续订状态
+	if googlePayment.AutoRenewing != nil {
+		info.AutoRenewing = *googlePayment.AutoRenewing
+	}
+
+	// 宽限期结束时间
+	if googlePayment.GracePeriodExpiryTime != nil {
+		info.GracePeriodEndTime = googlePayment.GracePeriodExpiryTime
+	}
+
+	// 取消原因
+	if googlePayment.CancelReason != nil {
+		reason := fmt.Sprintf("Cancel reason: %d", *googlePayment.CancelReason)
+		info.CancelReason = &reason
+	}
+}
+
+// setApplePaymentInfo 设置Apple支付信息
+func (s *subscriptionServiceImpl) setApplePaymentInfo(info *SubscriptionInfo, applePayment *models.ApplePayment) {
+	// 开始时间
+	if applePayment.PurchaseDate != nil {
+		info.StartTime = *applePayment.PurchaseDate
+	}
+
+	// 到期时间
+	if applePayment.ExpiresDate != nil {
+		info.ExpiryTime = *applePayment.ExpiresDate
+
+		// 计算下次计费时间（如果自动续订）
+		if applePayment.AutoRenewStatus != nil && *applePayment.AutoRenewStatus {
+			nextBilling := info.ExpiryTime
+			info.NextBillingTime = &nextBilling
+		}
+	}
+
+	// 自动续订状态
+	if applePayment.AutoRenewStatus != nil {
+		info.AutoRenewing = *applePayment.AutoRenewStatus
+	}
+
+	// 宽限期结束时间
+	if applePayment.GracePeriodExpirationDate != nil {
+		info.GracePeriodEndTime = applePayment.GracePeriodExpirationDate
+	}
+
+	// 取消原因
+	if applePayment.CancellationDate != nil {
+		reason := "User cancelled"
+		info.CancelReason = &reason
+	}
+}
+
+// setAlipayPaymentInfo 设置支付宝支付信息
+func (s *subscriptionServiceImpl) setAlipayPaymentInfo(info *SubscriptionInfo, alipayPayment *models.AlipayPayment) {
+	// 支付宝订阅信息处理（根据实际业务需求实现）
+	// 这里提供一个基础实现
+	if alipayPayment.CreatedAt.IsZero() {
+		info.StartTime = alipayPayment.CreatedAt
+	}
+
+	// 支付宝的订阅到期时间可能需要从业务逻辑中确定
+	// 这里假设有一个默认的30天周期
+	if !alipayPayment.CreatedAt.IsZero() {
+		info.ExpiryTime = alipayPayment.CreatedAt.AddDate(0, 1, 0) // 默认1个月
+	}
+
+	// 支付宝的自动续订状态需要根据具体业务确定
+	info.AutoRenewing = false // 默认不自动续订
 }
 
 // GetUserSubscriptions 获取用户订阅列表
@@ -205,6 +279,8 @@ func (s *subscriptionServiceImpl) GetUserSubscriptions(ctx context.Context, user
 		Where("user_id = ? AND type = ?", userID, models.OrderTypeSubscription).
 		Preload("User").
 		Preload("GooglePayment").
+		Preload("ApplePayment").
+		Preload("AlipayPayment").
 		Order("created_at DESC")
 
 	var orders []*models.Order
@@ -344,39 +420,65 @@ func (s *subscriptionServiceImpl) ValidateSubscription(ctx context.Context, orde
 		return nil, err
 	}
 
-	// 如果存在Google支付记录，尝试从Google验证
+	// 根据支付提供商进行验证
 	if subscription.GooglePayment != nil {
-		// 调用Google API验证订阅状态
-		googleSubscription, err := s.googleService.VerifySubscription(ctx,
-			subscription.Order.ProductID,
-			subscription.GooglePayment.PurchaseToken)
+		return s.validateGoogleSubscription(ctx, subscription)
+	} else if subscription.ApplePayment != nil {
+		return s.validateAppleSubscription(ctx, subscription)
+	}
 
-		if err != nil {
-			s.logger.Warn("Google订阅验证失败", zap.Error(err))
-			// 继续使用本地状态
-		} else {
-			// 根据Google响应更新状态
-			newStatus := GetSubscriptionStatus(googleSubscription, time.Now())
+	// 如果没有外部支付记录，返回本地验证结果
+	return s.validateLocalSubscription(subscription)
+}
 
-			// 如果状态发生变化，更新本地记录
-			if newStatus != subscription.CurrentStatus {
-				s.UpdateSubscriptionStatus(ctx, orderID, newStatus, "Google validation")
-				subscription.CurrentStatus = newStatus
-			}
+// validateGoogleSubscription 验证Google订阅
+func (s *subscriptionServiceImpl) validateGoogleSubscription(ctx context.Context, subscription *SubscriptionInfo) (*SubscriptionValidationResult, error) {
+	// 调用Google API验证订阅状态
+	googleSubscription, err := s.googleService.VerifySubscription(ctx,
+		subscription.Order.ProductID,
+		subscription.GooglePayment.PurchaseToken)
 
-			return &SubscriptionValidationResult{
-				IsValid:        newStatus == models.SubscriptionStateActive,
-				CurrentStatus:  newStatus,
-				ExpiryTime:     subscription.ExpiryTime,
-				AutoRenewing:   googleSubscription.AutoRenewing,
-				CancelReason:   &googleSubscription.CancelReason,
-				ValidationTime: time.Now(),
-				Message:        "Subscription validated with Google",
-			}, nil
+	if err != nil {
+		s.logger.Warn("Google订阅验证失败", zap.Error(err))
+		// 继续使用本地状态
+	} else {
+		// 根据Google响应更新状态
+		newStatus := GetSubscriptionStatus(googleSubscription, time.Now())
+
+		// 如果状态发生变化，更新本地记录
+		if newStatus != subscription.CurrentStatus {
+			s.UpdateSubscriptionStatus(ctx, subscription.Order.ID, newStatus, "Google validation")
+			subscription.CurrentStatus = newStatus
 		}
+
+		return &SubscriptionValidationResult{
+			IsValid:        newStatus == models.SubscriptionStateActive,
+			CurrentStatus:  newStatus,
+			ExpiryTime:     subscription.ExpiryTime,
+			AutoRenewing:   googleSubscription.AutoRenewing,
+			CancelReason:   &googleSubscription.CancelReason,
+			ValidationTime: time.Now(),
+			Message:        "Subscription validated with Google",
+		}, nil
 	}
 
 	// 返回本地验证结果
+	return s.validateLocalSubscription(subscription)
+}
+
+// validateAppleSubscription 验证Apple订阅
+func (s *subscriptionServiceImpl) validateAppleSubscription(ctx context.Context, subscription *SubscriptionInfo) (*SubscriptionValidationResult, error) {
+	// Apple订阅验证逻辑（根据实际业务需求实现）
+	// 这里提供一个基础实现
+
+	// 可以调用Apple API验证订阅状态
+	// 由于Apple的验证机制较复杂，这里使用本地状态
+
+	return s.validateLocalSubscription(subscription)
+}
+
+// validateLocalSubscription 本地订阅验证
+func (s *subscriptionServiceImpl) validateLocalSubscription(subscription *SubscriptionInfo) (*SubscriptionValidationResult, error) {
 	isValid := subscription.CurrentStatus == models.SubscriptionStateActive
 	message := "Subscription validated locally"
 	if !isValid {
@@ -463,7 +565,22 @@ func (s *subscriptionServiceImpl) GetSubscriptionStats(ctx context.Context, user
 }
 
 // determineSubscriptionStatus 确定订阅状态
-func (s *subscriptionServiceImpl) determineSubscriptionStatus(googlePayment *models.GooglePayment) models.SubscriptionState {
+func (s *subscriptionServiceImpl) determineSubscriptionStatus(googlePayment *models.GooglePayment, applePayment *models.ApplePayment, alipayPayment *models.AlipayPayment) models.SubscriptionState {
+	// 根据支付提供商确定状态
+	if googlePayment != nil {
+		return s.determineGoogleSubscriptionStatus(googlePayment)
+	} else if applePayment != nil {
+		return s.determineAppleSubscriptionStatus(applePayment)
+	} else if alipayPayment != nil {
+		return s.determineAlipaySubscriptionStatus(alipayPayment)
+	}
+
+	// 如果没有支付信息，返回待处理状态
+	return models.SubscriptionStatePending
+}
+
+// determineGoogleSubscriptionStatus 确定Google订阅状态
+func (s *subscriptionServiceImpl) determineGoogleSubscriptionStatus(googlePayment *models.GooglePayment) models.SubscriptionState {
 	if googlePayment == nil {
 		return models.SubscriptionStatePending
 	}
@@ -501,6 +618,73 @@ func (s *subscriptionServiceImpl) determineSubscriptionStatus(googlePayment *mod
 		if *googlePayment.AutoRenewing {
 			return models.SubscriptionStateActive
 		}
+	}
+
+	// 默认返回活跃状态
+	return models.SubscriptionStateActive
+}
+
+// determineAppleSubscriptionStatus 确定Apple订阅状态
+func (s *subscriptionServiceImpl) determineAppleSubscriptionStatus(applePayment *models.ApplePayment) models.SubscriptionState {
+	if applePayment == nil {
+		return models.SubscriptionStatePending
+	}
+
+	// 如果有取消日期，说明已取消
+	if applePayment.CancellationDate != nil {
+		// 检查是否已过期
+		if applePayment.ExpiresDate != nil && time.Now().After(*applePayment.ExpiresDate) {
+			return models.SubscriptionStateExpired
+		}
+		// 如果未过期，但已取消，返回已取消状态
+		return models.SubscriptionStateCancelled
+	}
+
+	// 检查宽限期
+	if applePayment.GracePeriodExpirationDate != nil {
+		if time.Now().Before(*applePayment.GracePeriodExpirationDate) {
+			return models.SubscriptionStateInGracePeriod
+		}
+	}
+
+	// 检查到期时间
+	if applePayment.ExpiresDate != nil {
+		if time.Now().After(*applePayment.ExpiresDate) {
+			return models.SubscriptionStateExpired
+		}
+	}
+
+	// 检查自动续订状态
+	if applePayment.AutoRenewStatus != nil {
+		if *applePayment.AutoRenewStatus {
+			return models.SubscriptionStateActive
+		}
+	}
+
+	// 默认返回活跃状态
+	return models.SubscriptionStateActive
+}
+
+// determineAlipaySubscriptionStatus 确定支付宝订阅状态
+func (s *subscriptionServiceImpl) determineAlipaySubscriptionStatus(alipayPayment *models.AlipayPayment) models.SubscriptionState {
+	if alipayPayment == nil {
+		return models.SubscriptionStatePending
+	}
+
+	// 支付宝订阅状态逻辑（根据实际业务需求实现）
+	// 这里提供一个基础实现
+
+	// 检查交易状态
+	if alipayPayment.TradeStatus == "TRADE_CLOSED" {
+		return models.SubscriptionStateCancelled
+	}
+
+	if alipayPayment.TradeStatus == "TRADE_FINISHED" {
+		return models.SubscriptionStateExpired
+	}
+
+	if alipayPayment.TradeStatus == "TRADE_SUCCESS" {
+		return models.SubscriptionStateActive
 	}
 
 	// 默认返回活跃状态

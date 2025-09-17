@@ -302,6 +302,11 @@ func (s *paymentServiceImpl) ProcessPayment(ctx context.Context, req *ProcessPay
 			tx.Rollback()
 			return nil, err
 		}
+	case models.PaymentProviderAppleStore:
+		if err := s.processApplePayment(ctx, tx, order, transaction, req.PurchaseToken); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
 	case models.PaymentProviderAlipay:
 		if err := s.processAlipayPayment(ctx, tx, order, transaction, req.PurchaseToken); err != nil {
 			tx.Rollback()
@@ -506,10 +511,16 @@ func (s *paymentServiceImpl) RefundPayment(ctx context.Context, orderID uint, am
 		return fmt.Errorf("订单状态不允许退款: %s", order.Status)
 	}
 
-	// 创建退款交易记录
-	provider := models.PaymentProviderGooglePlay
-	if order.GooglePayment == nil {
-		provider = ""
+	// 确定支付提供商
+	var provider models.PaymentProvider
+	if order.GooglePayment != nil {
+		provider = models.PaymentProviderGooglePlay
+	} else if order.ApplePayment != nil {
+		provider = models.PaymentProviderAppleStore
+	} else if order.AlipayPayment != nil {
+		provider = models.PaymentProviderAlipay
+	} else {
+		return fmt.Errorf("无法确定支付提供商")
 	}
 
 	refundTransaction := &models.PaymentTransaction{
@@ -629,7 +640,7 @@ func (s *paymentServiceImpl) generateTransactionID() string {
 }
 
 // processAlipayPayment 处理支付宝支付
-func (s *paymentServiceImpl) processAlipayPayment(ctx context.Context, tx *gorm.DB, order *models.Order, transaction *models.PaymentTransaction, authCode string) error {
+func (s *paymentServiceImpl) processAlipayPayment(_ context.Context, tx *gorm.DB, order *models.Order, transaction *models.PaymentTransaction, authCode string) error {
 	// 创建支付宝支付记录
 	alipayPayment := &models.AlipayPayment{
 		OrderID:        order.ID,
@@ -673,6 +684,74 @@ func (s *paymentServiceImpl) processAlipayPayment(ctx context.Context, tx *gorm.
 
 	if err := tx.Save(transaction).Error; err != nil {
 		return fmt.Errorf("更新交易记录失败: %w", err)
+	}
+
+	return nil
+}
+
+// processApplePayment 处理Apple Store支付
+func (s *paymentServiceImpl) processApplePayment(ctx context.Context, tx *gorm.DB, order *models.Order, transaction *models.PaymentTransaction, receiptData string) error {
+	// 验证Apple收据
+	appleResponse, err := s.appleService.VerifyPurchase(ctx, receiptData, order.ID)
+	if err != nil {
+		transaction.Status = models.PaymentStatusFailed
+		transaction.ErrorMessage = &[]string{err.Error()}[0]
+		tx.Save(transaction)
+		return fmt.Errorf("验证Apple收据失败: %w", err)
+	}
+
+	// 创建Apple支付记录
+	applePayment := &models.ApplePayment{
+		OrderID:               order.ID,
+		TransactionID:         appleResponse.TransactionID,
+		OriginalTransactionID: appleResponse.OriginalTransactionID,
+		ProductIDApple:        order.ProductID,
+		BundleID:              appleResponse.BundleID,
+		Quantity:              appleResponse.Quantity,
+		PurchaseDate:          &appleResponse.PurchaseDate,
+		OriginalPurchaseDate:  &appleResponse.OriginalPurchaseDate,
+		IsTrialPeriod:         &appleResponse.IsTrialPeriod,
+		IsInIntroOfferPeriod:  &appleResponse.IsInIntroOfferPeriod,
+		ProductType:           appleResponse.ProductType,
+		InAppOwnershipType:    appleResponse.InAppOwnershipType,
+		Environment:           appleResponse.Environment,
+		Status:                appleResponse.Status,
+		ReceiptData:           receiptData,
+	}
+
+	// 如果是订阅，设置到期时间
+	if appleResponse.ExpiresDate != nil {
+		applePayment.ExpiresDate = appleResponse.ExpiresDate
+	}
+
+	if err := tx.Create(applePayment).Error; err != nil {
+		return fmt.Errorf("创建Apple支付记录失败: %w", err)
+	}
+
+	// 准备提供商数据
+	providerData := models.JSON{
+		"apple_response": appleResponse,
+		"verified":       true,
+	}
+
+	// 更新交易记录状态
+	transaction.Status = models.PaymentStatusCompleted
+	transaction.ProcessedAt = &time.Time{}
+	*transaction.ProcessedAt = time.Now()
+	transaction.ProviderData = providerData
+
+	if err := tx.Save(transaction).Error; err != nil {
+		return fmt.Errorf("更新交易记录失败: %w", err)
+	}
+
+	// 更新订单状态
+	order.PaymentStatus = models.PaymentStatusCompleted
+	now := time.Now()
+	order.PaidAt = &now
+	order.Status = models.OrderStatusPaid
+
+	if err := tx.Save(order).Error; err != nil {
+		return fmt.Errorf("更新订单状态失败: %w", err)
 	}
 
 	return nil

@@ -59,14 +59,15 @@ type ProcessPaymentRequest struct {
 
 // CreateSubscriptionRequest 创建订阅请求
 type CreateSubscriptionRequest struct {
-	UserID           uint   `json:"user_id" binding:"required"`
-	ProductID        string `json:"product_id" binding:"required"`
-	Title            string `json:"title" binding:"required"`
-	Description      string `json:"description"`
-	Currency         string `json:"currency" binding:"required,len=3"`
-	Price            int64  `json:"price" binding:"required,min=0"`
-	Period           string `json:"period" binding:"required"`
-	DeveloperPayload string `json:"developer_payload"`
+	UserID           uint                `json:"user_id" binding:"required"`
+	ProductID        string              `json:"product_id" binding:"required"`
+	Title            string              `json:"title" binding:"required"`
+	Description      string              `json:"description"`
+	Currency         string              `json:"currency" binding:"required,len=3"`
+	Price            int64               `json:"price" binding:"required,min=0"`
+	Period           string              `json:"period" binding:"required"`
+	PaymentMethod    models.PaymentMethod `json:"payment_method" binding:"required"`
+	DeveloperPayload string              `json:"developer_payload"`
 }
 
 // WebhookRequest Webhook请求
@@ -362,6 +363,7 @@ func (h *Handler) CreateSubscription(c *gin.Context) {
 		Currency:         req.Currency,
 		Price:            req.Price,
 		Period:           req.Period,
+		PaymentMethod:    req.PaymentMethod,
 		DeveloperPayload: req.DeveloperPayload,
 	}
 
