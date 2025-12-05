@@ -72,6 +72,14 @@ func main() {
 		logger.Fatal("初始化Apple服务失败", zap.Error(err))
 	}
 
+	// 初始化微信支付服务
+	wechatService, err := services.NewWechatService(db.GetDB(), &cfg.Wechat, logger)
+	if err != nil {
+		logger.Warn("初始化微信支付服务失败，微信支付功能将不可用", zap.Error(err))
+		// 微信服务初始化失败不影响其他服务
+		wechatService = nil
+	}
+
 	// 初始化支付服务
 	paymentService := services.NewPaymentService(db.GetDB(), cfg, logger, googleService, alipayService, appleService)
 
@@ -88,7 +96,7 @@ func main() {
 	routes.SetupMiddleware(router, logger)
 
 	// 设置路由
-	routes.SetupRoutes(router, paymentService, subscriptionService, googleService, alipayService, appleService, db.GetDB(), logger)
+	routes.SetupRoutes(router, paymentService, subscriptionService, googleService, alipayService, appleService, wechatService, db.GetDB(), logger)
 
 	// 创建HTTP服务器
 	srv := &http.Server{

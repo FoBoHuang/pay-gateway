@@ -18,6 +18,7 @@ type Config struct {
 	JWT      JWTConfig      // JWT认证配置
 	Alipay   AlipayConfig   // 支付宝配置
 	Apple    AppleConfig    // Apple Store配置
+	Wechat   WechatConfig   // 微信支付配置
 }
 
 // ServerConfig 服务器配置参数
@@ -90,6 +91,18 @@ type AppleConfig struct {
 	PrivateKeyPath string // Apple私钥文件路径（如果私钥内容为空，则从文件读取）
 	Sandbox        bool   // 是否使用沙盒环境
 	WebhookSecret  string // Apple Webhook密钥，用于验证通知
+}
+
+// WechatConfig 微信支付配置
+type WechatConfig struct {
+	AppID          string // 微信应用ID（公众号/小程序/APP）
+	MchID          string // 微信商户号
+	APIv3Key       string // API v3密钥
+	SerialNo       string // 证书序列号
+	PrivateKey     string // 商户私钥内容
+	PrivateKeyPath string // 商户私钥文件路径
+	NotifyURL      string // 异步通知URL
+	CertPath       string // 商户证书路径（可选）
 }
 
 // Load 从配置文件加载配置，支持环境变量覆盖
@@ -190,6 +203,16 @@ func loadDefaults() *Config {
 			PrivateKeyPath: "",
 			Sandbox:        false,
 			WebhookSecret:  "",
+		},
+		Wechat: WechatConfig{
+			AppID:          "",
+			MchID:          "",
+			APIv3Key:       "",
+			SerialNo:       "",
+			PrivateKey:     "",
+			PrivateKeyPath: "",
+			NotifyURL:      "https://your-domain.com/api/wechat/notify",
+			CertPath:       "",
 		},
 	}
 }
@@ -325,6 +348,32 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if webhookSecret := os.Getenv("APPLE_WEBHOOK_SECRET"); webhookSecret != "" {
 		c.Apple.WebhookSecret = webhookSecret
+	}
+
+	// 微信支付配置覆盖
+	if appID := os.Getenv("WECHAT_APP_ID"); appID != "" {
+		c.Wechat.AppID = appID
+	}
+	if mchID := os.Getenv("WECHAT_MCH_ID"); mchID != "" {
+		c.Wechat.MchID = mchID
+	}
+	if apiv3Key := os.Getenv("WECHAT_APIV3_KEY"); apiv3Key != "" {
+		c.Wechat.APIv3Key = apiv3Key
+	}
+	if serialNo := os.Getenv("WECHAT_SERIAL_NO"); serialNo != "" {
+		c.Wechat.SerialNo = serialNo
+	}
+	if privateKey := os.Getenv("WECHAT_PRIVATE_KEY"); privateKey != "" {
+		c.Wechat.PrivateKey = privateKey
+	}
+	if privateKeyPath := os.Getenv("WECHAT_PRIVATE_KEY_PATH"); privateKeyPath != "" {
+		c.Wechat.PrivateKeyPath = privateKeyPath
+	}
+	if notifyURL := os.Getenv("WECHAT_NOTIFY_URL"); notifyURL != "" {
+		c.Wechat.NotifyURL = notifyURL
+	}
+	if certPath := os.Getenv("WECHAT_CERT_PATH"); certPath != "" {
+		c.Wechat.CertPath = certPath
 	}
 }
 

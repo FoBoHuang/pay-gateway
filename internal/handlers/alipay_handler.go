@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -281,4 +282,217 @@ func (h *AlipayHandler) errorResponse(c *gin.Context, code int, message string, 
 		response.Error = err.Error()
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+// ==================== 周期扣款（订阅）API ====================
+
+// CreateAlipaySubscription 创建支付宝周期扣款（签约）
+// @Summary 创建支付宝周期扣款
+// @Description 创建支付宝周期扣款协议（签约）
+// @Tags 支付宝订阅
+// @Accept json
+// @Produce json
+// @Param request body CreateAlipaySubscriptionRequest true "创建周期扣款请求"
+// @Success 200 {object} Response{data=CreateAlipaySubscriptionResponse}
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/alipay/subscriptions [post]
+func (h *AlipayHandler) CreateAlipaySubscription(c *gin.Context) {
+	var req CreateAlipaySubscriptionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("创建支付宝周期扣款请求参数错误", zap.Error(err))
+		h.errorResponse(c, 400, "请求参数错误", err)
+		return
+	}
+
+	// 转换为服务层请求
+	serviceReq := &services.CreateAlipaySubscriptionRequest{
+		UserID:              req.UserID,
+		ProductID:           req.ProductID,
+		ProductName:         req.ProductName,
+		ProductDesc:         req.ProductDesc,
+		PeriodType:          req.PeriodType,
+		Period:              req.Period,
+		ExecutionTime:       req.ExecutionTime,
+		SingleAmount:        req.SingleAmount,
+		TotalAmount:         req.TotalAmount,
+		TotalPayments:       req.TotalPayments,
+		PersonalProductCode: req.PersonalProductCode,
+		SignScene:           req.SignScene,
+	}
+
+	result, err := h.alipayService.CreateSubscription(c.Request.Context(), serviceReq)
+	if err != nil {
+		h.logger.Error("创建支付宝周期扣款失败", zap.Error(err))
+		h.errorResponse(c, 500, "创建周期扣款失败", err)
+		return
+	}
+
+	response := &CreateAlipaySubscriptionResponse{
+		OrderID:       result.OrderID,
+		OutRequestNo:  result.OutRequestNo,
+		SignURL:       result.SignURL,
+		Status:        result.Status,
+		ExecutionTime: result.ExecutionTime.Format("2006-01-02 15:04:05"),
+	}
+
+	h.logger.Info("支付宝周期扣款创建成功", zap.Uint("order_id", result.OrderID))
+	h.successResponse(c, response)
+}
+
+// QueryAlipaySubscription 查询支付宝周期扣款状态
+// @Summary 查询支付宝周期扣款
+// @Description 查询支付宝周期扣款协议状态
+// @Tags 支付宝订阅
+// @Accept json
+// @Produce json
+// @Param out_request_no query string true "商户签约号"
+// @Success 200 {object} Response{data=QueryAlipaySubscriptionResponse}
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/alipay/subscriptions/query [get]
+func (h *AlipayHandler) QueryAlipaySubscription(c *gin.Context) {
+	outRequestNo := c.Query("out_request_no")
+	if outRequestNo == "" {
+		h.errorResponse(c, 400, "商户签约号不能为空", nil)
+		return
+	}
+
+	result, err := h.alipayService.QuerySubscription(c.Request.Context(), outRequestNo)
+	if err != nil {
+		h.logger.Error("查询支付宝周期扣款失败", zap.Error(err))
+		h.errorResponse(c, 500, "查询周期扣款失败", err)
+		return
+	}
+
+	response := &QueryAlipaySubscriptionResponse{
+		OutRequestNo:        result.OutRequestNo,
+		AgreementNo:         result.AgreementNo,
+		ExternalAgreementNo: result.ExternalAgreementNo,
+		Status:              result.Status,
+		PeriodType:          result.PeriodType,
+		Period:              result.Period,
+		SingleAmount:        result.SingleAmount,
+		TotalAmount:         result.TotalAmount,
+		TotalPayments:       result.TotalPayments,
+		CurrentPeriod:       result.CurrentPeriod,
+		DeductSuccessCount:  result.DeductSuccessCount,
+		DeductFailCount:     result.DeductFailCount,
+	}
+
+	// 格式化时间字段
+	if result.SignTime != nil {
+		signTime := result.SignTime.Format("2006-01-02 15:04:05")
+		response.SignTime = &signTime
+	}
+	if result.ValidTime != nil {
+		validTime := result.ValidTime.Format("2006-01-02 15:04:05")
+		response.ValidTime = &validTime
+	}
+	if result.InvalidTime != nil {
+		invalidTime := result.InvalidTime.Format("2006-01-02 15:04:05")
+		response.InvalidTime = &invalidTime
+	}
+	if result.ExecutionTime != nil {
+		executionTime := result.ExecutionTime.Format("2006-01-02 15:04:05")
+		response.ExecutionTime = &executionTime
+	}
+	if result.LastDeductTime != nil {
+		lastDeductTime := result.LastDeductTime.Format("2006-01-02 15:04:05")
+		response.LastDeductTime = &lastDeductTime
+	}
+	if result.NextDeductTime != nil {
+		nextDeductTime := result.NextDeductTime.Format("2006-01-02 15:04:05")
+		response.NextDeductTime = &nextDeductTime
+	}
+
+	h.successResponse(c, response)
+}
+
+// CancelAlipaySubscription 取消支付宝周期扣款（解约）
+// @Summary 取消支付宝周期扣款
+// @Description 取消支付宝周期扣款协议（解约）
+// @Tags 支付宝订阅
+// @Accept json
+// @Produce json
+// @Param request body CancelAlipaySubscriptionRequest true "取消周期扣款请求"
+// @Success 200 {object} Response
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/alipay/subscriptions/cancel [post]
+func (h *AlipayHandler) CancelAlipaySubscription(c *gin.Context) {
+	var req CancelAlipaySubscriptionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("取消支付宝周期扣款请求参数错误", zap.Error(err))
+		h.errorResponse(c, 400, "请求参数错误", err)
+		return
+	}
+
+	serviceReq := &services.CancelAlipaySubscriptionRequest{
+		OutRequestNo: req.OutRequestNo,
+		AgreementNo:  req.AgreementNo,
+		CancelReason: req.CancelReason,
+	}
+
+	err := h.alipayService.CancelSubscription(c.Request.Context(), serviceReq)
+	if err != nil {
+		h.logger.Error("取消支付宝周期扣款失败", zap.Error(err))
+		h.errorResponse(c, 500, "取消周期扣款失败", err)
+		return
+	}
+
+	h.logger.Info("支付宝周期扣款取消成功", zap.String("out_request_no", req.OutRequestNo))
+	h.successResponse(c, gin.H{"message": "周期扣款取消成功"})
+}
+
+// ==================== 周期扣款请求和响应结构体 ====================
+
+type CreateAlipaySubscriptionRequest struct {
+	UserID              uint       `json:"user_id" binding:"required"`
+	ProductID           string     `json:"product_id" binding:"required"`
+	ProductName         string     `json:"product_name" binding:"required"`
+	ProductDesc         string     `json:"product_desc"`
+	PeriodType          string     `json:"period_type" binding:"required,oneof=DAY MONTH"`
+	Period              int        `json:"period" binding:"required,min=1"`
+	ExecutionTime       *time.Time `json:"execution_time"`
+	SingleAmount        int64      `json:"single_amount" binding:"required,min=1"`
+	TotalAmount         int64      `json:"total_amount"`
+	TotalPayments       int        `json:"total_payments"`
+	PersonalProductCode string     `json:"personal_product_code" binding:"required"`
+	SignScene           string     `json:"sign_scene" binding:"required"`
+}
+
+type CreateAlipaySubscriptionResponse struct {
+	OrderID       uint   `json:"order_id"`
+	OutRequestNo  string `json:"out_request_no"`
+	SignURL       string `json:"sign_url"`
+	Status        string `json:"status"`
+	ExecutionTime string `json:"execution_time"`
+}
+
+type QueryAlipaySubscriptionResponse struct {
+	OutRequestNo        string  `json:"out_request_no"`
+	AgreementNo         string  `json:"agreement_no"`
+	ExternalAgreementNo string  `json:"external_agreement_no,omitempty"`
+	Status              string  `json:"status"`
+	SignTime            *string `json:"sign_time,omitempty"`
+	ValidTime           *string `json:"valid_time,omitempty"`
+	InvalidTime         *string `json:"invalid_time,omitempty"`
+	PeriodType          string  `json:"period_type"`
+	Period              int     `json:"period"`
+	ExecutionTime       *string `json:"execution_time,omitempty"`
+	SingleAmount        string  `json:"single_amount"`
+	TotalAmount         string  `json:"total_amount,omitempty"`
+	TotalPayments       int     `json:"total_payments"`
+	CurrentPeriod       int     `json:"current_period"`
+	LastDeductTime      *string `json:"last_deduct_time,omitempty"`
+	NextDeductTime      *string `json:"next_deduct_time,omitempty"`
+	DeductSuccessCount  int     `json:"deduct_success_count"`
+	DeductFailCount     int     `json:"deduct_fail_count"`
+}
+
+type CancelAlipaySubscriptionRequest struct {
+	OutRequestNo string `json:"out_request_no"`
+	AgreementNo  string `json:"agreement_no"`
+	CancelReason string `json:"cancel_reason" binding:"required"`
 }

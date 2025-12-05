@@ -483,7 +483,275 @@ func formatAmount(amount int64) string {
 	return fmt.Sprintf("%.2f", float64(amount)/100)
 }
 
-// 请求和响应结构体
+// ==================== 周期扣款（订阅）功能 ====================
+
+// CreateSubscription 创建支付宝周期扣款协议（签约）
+func (s *AlipayService) CreateSubscription(ctx context.Context, req *CreateAlipaySubscriptionRequest) (*CreateAlipaySubscriptionResponse, error) {
+	// 生成商户签约号
+	outRequestNo := fmt.Sprintf("SUB%s%s", time.Now().Format("20060102150405"), uuid.New().String()[:8])
+
+	// 创建订单记录
+	order := &models.Order{
+		OrderNo:       outRequestNo,
+		UserID:        req.UserID,
+		ProductID:     req.ProductID,
+		Type:          models.OrderTypeSubscription,
+		Title:         req.ProductName,
+		Description:   req.ProductDesc,
+		Quantity:      1,
+		Currency:      "CNY",
+		TotalAmount:   req.SingleAmount,
+		Status:        models.OrderStatusCreated,
+		PaymentMethod: models.PaymentMethodAlipay,
+		PaymentStatus: models.PaymentStatusPending,
+	}
+
+	// 计算首次执行时间（默认为明天）
+	executionTime := time.Now().AddDate(0, 0, 1)
+	if req.ExecutionTime != nil {
+		executionTime = *req.ExecutionTime
+	}
+
+	// 开启事务
+	tx := s.db.Begin()
+	if err := tx.Create(order).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("创建订单失败: %v", err)
+	}
+
+	// 创建周期扣款记录
+	subscription := &models.AlipaySubscription{
+		OrderID:             order.ID,
+		OutRequestNo:        outRequestNo,
+		PeriodType:          req.PeriodType,
+		Period:              req.Period,
+		ExecutionTime:       &executionTime,
+		SingleAmount:        formatAmount(req.SingleAmount),
+		TotalAmount:         formatAmount(req.TotalAmount),
+		TotalPayments:       req.TotalPayments,
+		CurrentPeriod:       0,
+		Status:              "TEMP", // 临时状态，等待签约
+		AppID:               s.config.AppID,
+		PersonalProductCode: req.PersonalProductCode,
+		SignScene:           req.SignScene,
+	}
+
+	if err := tx.Create(subscription).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("创建周期扣款记录失败: %v", err)
+	}
+
+	// 提交事务
+	if err := tx.Commit().Error; err != nil {
+		return nil, fmt.Errorf("提交事务失败: %v", err)
+	}
+
+	// 构建签约请求
+	// 注意：实际应用中需要调用支付宝签约API
+	// 这里返回签约URL供客户端跳转
+	signURL := fmt.Sprintf("https://openapi.alipay.com/gateway.do?method=alipay.user.agreement.page.sign&out_request_no=%s", outRequestNo)
+
+	return &CreateAlipaySubscriptionResponse{
+		OrderID:       order.ID,
+		OutRequestNo:  outRequestNo,
+		SignURL:       signURL,
+		Status:        "TEMP",
+		ExecutionTime: executionTime,
+	}, nil
+}
+
+// QuerySubscription 查询周期扣款状态
+func (s *AlipayService) QuerySubscription(ctx context.Context, outRequestNo string) (*QueryAlipaySubscriptionResponse, error) {
+	var subscription models.AlipaySubscription
+	if err := s.db.Where("out_request_no = ?", outRequestNo).First(&subscription).Error; err != nil {
+		return nil, fmt.Errorf("周期扣款协议不存在: %v", err)
+	}
+
+	// 实际应用中应该调用支付宝API查询最新状态
+
+	return &QueryAlipaySubscriptionResponse{
+		OutRequestNo:        subscription.OutRequestNo,
+		AgreementNo:         subscription.AgreementNo,
+		ExternalAgreementNo: subscription.ExternalAgreementNo,
+		Status:              subscription.Status,
+		SignTime:            subscription.SignTime,
+		ValidTime:           subscription.ValidTime,
+		InvalidTime:         subscription.InvalidTime,
+		PeriodType:          subscription.PeriodType,
+		Period:              subscription.Period,
+		ExecutionTime:       subscription.ExecutionTime,
+		SingleAmount:        subscription.SingleAmount,
+		TotalAmount:         subscription.TotalAmount,
+		TotalPayments:       subscription.TotalPayments,
+		CurrentPeriod:       subscription.CurrentPeriod,
+		LastDeductTime:      subscription.LastDeductTime,
+		NextDeductTime:      subscription.NextDeductTime,
+		DeductSuccessCount:  subscription.DeductSuccessCount,
+		DeductFailCount:     subscription.DeductFailCount,
+	}, nil
+}
+
+// CancelSubscription 解约（取消周期扣款）
+func (s *AlipayService) CancelSubscription(ctx context.Context, req *CancelAlipaySubscriptionRequest) error {
+	var subscription models.AlipaySubscription
+	if err := s.db.Where("out_request_no = ? OR agreement_no = ?", req.OutRequestNo, req.AgreementNo).First(&subscription).Error; err != nil {
+		return fmt.Errorf("周期扣款协议不存在: %v", err)
+	}
+
+	// 检查状态
+	if subscription.Status == "STOP" {
+		return errors.New("协议已停止，无需重复解约")
+	}
+
+	// 实际应用中应该调用支付宝解约API
+	// p := alipay.UserAgreementUnsign{}
+	// p.AgreementNo = subscription.AgreementNo
+	// result, err := s.client.UserAgreementUnsign(ctx, p)
+
+	// 更新本地状态
+	now := time.Now()
+	subscription.Status = "STOP"
+	subscription.CancelTime = &now
+	subscription.CancelReason = req.CancelReason
+
+	if err := s.db.Save(&subscription).Error; err != nil {
+		return fmt.Errorf("更新周期扣款状态失败: %v", err)
+	}
+
+	return nil
+}
+
+// HandleSubscriptionNotify 处理支付宝周期扣款通知
+func (s *AlipayService) HandleSubscriptionNotify(ctx context.Context, notifyData map[string]string) error {
+	// 验证签名
+	formData := url.Values{}
+	for k, v := range notifyData {
+		formData.Set(k, v)
+	}
+	err := s.client.VerifySign(formData)
+	if err != nil {
+		return errors.New("签名验证失败")
+	}
+
+	// 提取关键参数
+	agreementNo := notifyData["agreement_no"]
+	outRequestNo := notifyData["out_request_no"]
+	status := notifyData["status"]
+
+	// 查询周期扣款记录
+	var subscription models.AlipaySubscription
+	if err := s.db.Where("out_request_no = ? OR agreement_no = ?", outRequestNo, agreementNo).First(&subscription).Error; err != nil {
+		return fmt.Errorf("周期扣款协议不存在: %v", err)
+	}
+
+	// 更新协议信息
+	now := time.Now()
+	subscription.AgreementNo = agreementNo
+	subscription.Status = status
+
+	if status == "NORMAL" {
+		// 签约成功
+		if signTime, ok := notifyData["sign_time"]; ok {
+			if t, err := time.Parse("2006-01-02 15:04:05", signTime); err == nil {
+				subscription.SignTime = &t
+			}
+		}
+		if validTime, ok := notifyData["valid_time"]; ok {
+			if t, err := time.Parse("2006-01-02 15:04:05", validTime); err == nil {
+				subscription.ValidTime = &t
+			}
+		}
+		if invalidTime, ok := notifyData["invalid_time"]; ok {
+			if t, err := time.Parse("2006-01-02 15:04:05", invalidTime); err == nil {
+				subscription.InvalidTime = &t
+			}
+		}
+	} else if status == "STOP" {
+		// 解约
+		subscription.CancelTime = &now
+	}
+
+	if err := s.db.Save(&subscription).Error; err != nil {
+		return fmt.Errorf("更新周期扣款状态失败: %v", err)
+	}
+
+	return nil
+}
+
+// HandleDeductNotify 处理周期扣款扣款通知
+func (s *AlipayService) HandleDeductNotify(ctx context.Context, notifyData map[string]string) error {
+	// 验证签名
+	formData := url.Values{}
+	for k, v := range notifyData {
+		formData.Set(k, v)
+	}
+	err := s.client.VerifySign(formData)
+	if err != nil {
+		return errors.New("签名验证失败")
+	}
+
+	// 提取关键参数
+	agreementNo := notifyData["agreement_no"]
+	outTradeNo := notifyData["out_trade_no"]
+	tradeNo := notifyData["trade_no"]
+	amount := notifyData["amount"]
+	status := notifyData["status"] // SUCCESS 或 FAIL
+
+	// 查询周期扣款记录
+	var subscription models.AlipaySubscription
+	if err := s.db.Where("agreement_no = ?", agreementNo).First(&subscription).Error; err != nil {
+		return fmt.Errorf("周期扣款协议不存在: %v", err)
+	}
+
+	// 更新扣款统计
+	now := time.Now()
+	subscription.LastDeductTime = &now
+	subscription.LastDeductAmount = amount
+	subscription.LastDeductStatus = status
+
+	if status == "SUCCESS" {
+		subscription.DeductSuccessCount++
+		subscription.CurrentPeriod++
+	} else {
+		subscription.DeductFailCount++
+	}
+
+	// 计算下次扣款时间
+	if subscription.ExecutionTime != nil {
+		var nextTime time.Time
+		if subscription.PeriodType == "MONTH" {
+			nextTime = subscription.ExecutionTime.AddDate(0, subscription.Period*subscription.CurrentPeriod, 0)
+		} else if subscription.PeriodType == "DAY" {
+			nextTime = subscription.ExecutionTime.AddDate(0, 0, subscription.Period*subscription.CurrentPeriod)
+		}
+		subscription.NextDeductTime = &nextTime
+	}
+
+	if err := s.db.Save(&subscription).Error; err != nil {
+		return fmt.Errorf("更新周期扣款记录失败: %v", err)
+	}
+
+	// 如果扣款成功，创建支付记录
+	if status == "SUCCESS" {
+		// 创建支付宝支付记录
+		alipayPayment := &models.AlipayPayment{
+			OrderID:     subscription.OrderID,
+			OutTradeNo:  outTradeNo,
+			TradeNo:     tradeNo,
+			TotalAmount: amount,
+			Subject:     fmt.Sprintf("周期扣款-%s", agreementNo),
+			TradeStatus: "TRADE_SUCCESS",
+			AppID:       s.config.AppID,
+			TimeEnd:     &now,
+		}
+		s.db.Create(alipayPayment)
+	}
+
+	return nil
+}
+
+// ==================== 请求和响应结构体 ====================
+
 type CreateAlipayOrderRequest struct {
 	UserID      uint   `json:"user_id" binding:"required"`
 	ProductID   string `json:"product_id" binding:"required"`
@@ -520,4 +788,56 @@ type RefundResponse struct {
 	RefundAmount    int64      `json:"refund_amount"`
 	RefundStatus    string     `json:"refund_status"`
 	RefundAt        *time.Time `json:"refund_at,omitempty"`
+}
+
+// 周期扣款相关结构体
+
+type CreateAlipaySubscriptionRequest struct {
+	UserID              uint       `json:"user_id" binding:"required"`
+	ProductID           string     `json:"product_id" binding:"required"`
+	ProductName         string     `json:"product_name" binding:"required"`
+	ProductDesc         string     `json:"product_desc"`
+	PeriodType          string     `json:"period_type" binding:"required,oneof=DAY MONTH"` // 周期类型：DAY-日，MONTH-月
+	Period              int        `json:"period" binding:"required,min=1"`                // 周期数
+	ExecutionTime       *time.Time `json:"execution_time"`                                 // 首次执行时间
+	SingleAmount        int64      `json:"single_amount" binding:"required,min=1"`         // 单次扣款金额（分）
+	TotalAmount         int64      `json:"total_amount"`                                   // 总金额限制（分）
+	TotalPayments       int        `json:"total_payments"`                                 // 总扣款次数
+	PersonalProductCode string     `json:"personal_product_code" binding:"required"`       // 个人签约产品码
+	SignScene           string     `json:"sign_scene" binding:"required"`                  // 签约场景
+}
+
+type CreateAlipaySubscriptionResponse struct {
+	OrderID       uint      `json:"order_id"`
+	OutRequestNo  string    `json:"out_request_no"`
+	SignURL       string    `json:"sign_url"` // 签约URL
+	Status        string    `json:"status"`
+	ExecutionTime time.Time `json:"execution_time"`
+}
+
+type QueryAlipaySubscriptionResponse struct {
+	OutRequestNo        string     `json:"out_request_no"`
+	AgreementNo         string     `json:"agreement_no"`
+	ExternalAgreementNo string     `json:"external_agreement_no,omitempty"`
+	Status              string     `json:"status"`
+	SignTime            *time.Time `json:"sign_time,omitempty"`
+	ValidTime           *time.Time `json:"valid_time,omitempty"`
+	InvalidTime         *time.Time `json:"invalid_time,omitempty"`
+	PeriodType          string     `json:"period_type"`
+	Period              int        `json:"period"`
+	ExecutionTime       *time.Time `json:"execution_time,omitempty"`
+	SingleAmount        string     `json:"single_amount"`
+	TotalAmount         string     `json:"total_amount,omitempty"`
+	TotalPayments       int        `json:"total_payments"`
+	CurrentPeriod       int        `json:"current_period"`
+	LastDeductTime      *time.Time `json:"last_deduct_time,omitempty"`
+	NextDeductTime      *time.Time `json:"next_deduct_time,omitempty"`
+	DeductSuccessCount  int        `json:"deduct_success_count"`
+	DeductFailCount     int        `json:"deduct_fail_count"`
+}
+
+type CancelAlipaySubscriptionRequest struct {
+	OutRequestNo string `json:"out_request_no"` // 商户签约号
+	AgreementNo  string `json:"agreement_no"`   // 支付宝协议号
+	CancelReason string `json:"cancel_reason" binding:"required"`
 }

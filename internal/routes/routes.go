@@ -20,6 +20,7 @@ func SetupRoutes(
 	googleService *services.GooglePlayService,
 	alipayService *services.AlipayService,
 	appleService *services.AppleService,
+	wechatService *services.WechatService,
 	db *gorm.DB,
 	logger *zap.Logger,
 ) {
@@ -27,6 +28,7 @@ func SetupRoutes(
 	handler := handlers.NewHandler(paymentService, subscriptionService, googleService, logger)
 	alipayHandler := handlers.NewAlipayHandler(alipayService, paymentService, logger)
 	appleHandler := handlers.NewAppleHandler(appleService, paymentService, subscriptionService, logger)
+	wechatHandler := handlers.NewWechatHandler(wechatService, logger)
 
 	// 创建Webhook处理器
 	webhookHandler := handlers.NewWebhookHandler(
@@ -66,10 +68,16 @@ func SetupRoutes(
 		// 支付宝相关路由
 		alipay := v1.Group("/alipay")
 		{
+			// 支付宝支付
 			alipay.POST("/orders", alipayHandler.CreateAlipayOrder)     // 创建支付宝订单
 			alipay.POST("/payments", alipayHandler.CreateAlipayPayment) // 创建支付宝支付
 			alipay.GET("/orders/query", alipayHandler.QueryAlipayOrder) // 查询支付宝订单
 			alipay.POST("/refunds", alipayHandler.AlipayRefund)         // 支付宝退款
+
+			// 支付宝周期扣款（订阅）
+			alipay.POST("/subscriptions", alipayHandler.CreateAlipaySubscription)        // 创建周期扣款
+			alipay.GET("/subscriptions/query", alipayHandler.QueryAlipaySubscription)    // 查询周期扣款
+			alipay.POST("/subscriptions/cancel", alipayHandler.CancelAlipaySubscription) // 取消周期扣款
 		}
 
 		// Apple相关路由
@@ -80,6 +88,19 @@ func SetupRoutes(
 			apple.POST("/validate-receipt", appleHandler.ValidateReceipt)                                   // 验证Apple收据（简化版本）
 			apple.GET("/transactions/:original_transaction_id/history", appleHandler.GetTransactionHistory) // 获取交易历史
 			apple.GET("/subscriptions/:original_transaction_id/status", appleHandler.GetSubscriptionStatus) // 获取订阅状态
+		}
+
+		// 微信支付相关路由
+		wechat := v1.Group("/wechat")
+		{
+			wechat.POST("/orders", wechatHandler.CreateOrder)                            // 创建微信订单
+			wechat.GET("/orders/:order_no", wechatHandler.QueryOrder)                    // 查询订单状态
+			wechat.POST("/orders/:order_no/close", wechatHandler.CloseOrder)             // 关闭订单
+			wechat.POST("/payments/jsapi/:order_no", wechatHandler.CreateJSAPIPayment)   // 创建JSAPI支付
+			wechat.POST("/payments/native/:order_no", wechatHandler.CreateNativePayment) // 创建Native支付
+			wechat.POST("/payments/app/:order_no", wechatHandler.CreateAPPPayment)       // 创建APP支付
+			wechat.POST("/payments/h5/:order_no", wechatHandler.CreateH5Payment)         // 创建H5支付
+			wechat.POST("/refunds", wechatHandler.Refund)                                // 退款
 		}
 
 		// 订阅相关路由
@@ -106,6 +127,7 @@ func SetupRoutes(
 		webhooks.POST("/google-play", webhookHandler.HandleGooglePlayWebhook) // Google Play Webhook
 		webhooks.POST("/alipay", webhookHandler.HandleAlipayWebhook)          // 支付宝 Webhook
 		webhooks.POST("/apple", appleWebhookHandler.HandleAppleWebhook)       // Apple Webhook
+		webhooks.POST("/wechat/notify", wechatHandler.HandleNotify)           // 微信支付 Webhook
 	}
 
 	// 系统路由

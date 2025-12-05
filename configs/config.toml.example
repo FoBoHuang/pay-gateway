@@ -1,0 +1,84 @@
+# Pay Gateway 配置文件示例
+# 复制此文件为 config.toml 并填写实际配置
+
+[server]
+port = "8080"
+mode = "release"  # debug or release
+read_timeout = "15s"
+write_timeout = "15s"
+
+[database]
+host = "localhost"
+port = "5432"
+user = "postgres"
+password = "your_password"
+dbname = "billing"
+sslmode = "disable"
+max_idle_conns = 10
+max_open_conns = 100
+
+[redis]
+host = "localhost"
+port = "6379"
+password = ""
+db = 0
+pool_size = 10
+min_idle_conns = 5
+
+[jwt]
+secret = "your_jwt_secret_key_here"
+expire_time = "24h"
+
+# Google Play 配置
+[google]
+service_account_file = "configs/google-service-account.json"
+package_name = "com.example.app"
+webhook_secret = "your_google_webhook_secret"
+
+# 微信支付配置
+[wechat]
+app_id = "wx1234567890abcdef"                    # 微信应用ID
+mch_id = "1234567890"                             # 微信商户号
+apiv3_key = "your_apiv3_key_32_characters_long"  # API v3密钥，32位
+serial_no = "1234567890ABCDEF"                    # 证书序列号
+private_key = """
+-----BEGIN PRIVATE KEY-----
+Your Wechat Private Key Content Here
+-----END PRIVATE KEY-----
+"""
+# 或者使用私钥文件路径
+# private_key_path = "configs/wechat_private_key.pem"
+notify_url = "https://your-domain.com/webhook/wechat/notify"
+cert_path = "configs/wechat_cert.pem"             # 可选，商户证书路径
+
+# 支付宝配置
+[alipay]
+app_id = "2021001234567890"                      # 支付宝应用ID
+private_key = """
+-----BEGIN RSA PRIVATE KEY-----
+Your Alipay Private Key Content Here
+-----END RSA PRIVATE KEY-----
+"""
+is_production = false                             # 是否为生产环境
+notify_url = "https://your-domain.com/webhook/alipay"
+return_url = "https://your-domain.com/payment/return"
+cert_mode = false                                 # 是否使用证书模式
+app_cert_path = "configs/alipay/appCertPublicKey.crt"
+root_cert_path = "configs/alipay/alipayRootCert.crt"
+alipay_cert_path = "configs/alipay/alipayCertPublicKey_RSA2.crt"
+
+# Apple Store 配置
+[apple]
+key_id = "ABC123DEFG"                             # Apple私钥ID
+issuer_id = "12345678-1234-1234-1234-123456789012" # Apple发行者ID
+bundle_id = "com.example.app"                     # iOS应用Bundle ID
+private_key = """
+-----BEGIN PRIVATE KEY-----
+Your Apple Private Key Content Here (.p8 file)
+-----END PRIVATE KEY-----
+"""
+# 或者使用私钥文件路径
+# private_key_path = "configs/apple_private_key.p8"
+sandbox = false                                   # 是否使用沙盒环境
+webhook_secret = "your_apple_webhook_secret"
+

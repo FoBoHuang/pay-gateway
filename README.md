@@ -1,12 +1,40 @@
 # Pay Gateway - 支付中心服务
 
-一个基于Go语言开发的高性能支付中心服务，专门用于处理Google Play应用内购买和订阅验证。
+一个基于Go语言开发的高性能、多渠道支付中心服务，支持国内外主流支付方式和应用内购买。
+
+## 📖 文档导航
+
+### 🎓 新手入门
+
+👉 **[新手入门指南](docs/GETTING_STARTED.md)** - 三步快速开始
+
+👉 **[文档中心](docs/README.md)** - 查看所有文档
+
+### 🚀 快速开始（按支付方式）
+
+- 💳 [微信支付](docs/guides/wechat/quick-start.md) - JSAPI、Native、APP、H5
+- 💰 [支付宝](docs/guides/alipay/quick-start.md) - WAP、PAGE、周期扣款
+- 🤖 [Google Play](docs/guides/google-play/quick-start.md) - 内购和订阅
+- 🍎 [Apple](docs/guides/apple/quick-start.md) - 内购和订阅
+
+### 📚 常用文档
+
+- 🗺️ [代码位置速查](docs/references/code-map.md) - 快速找代码
+- 📊 [功能总结](docs/references/all-payments.md) - 完整功能概览
+- 📝 [配置示例](configs/config.toml.example) - 配置模板
 
 ## 🚀 项目特性
 
+- **多支付渠道**: 支持微信支付、支付宝、Google Play、Apple Store
 - **完整的支付流程**: 支持一次性购买和订阅管理
-- **Google Play集成**: 完整的Google Play Billing API集成
-- **Webhook处理**: 实时处理Google Play的Webhook通知
+- **统一的接口设计**: 提供统一的API接口，屏蔽不同支付渠道的差异
+- **国内支付**: 
+  - 微信支付（JSAPI、Native、APP、H5）
+  - 支付宝（手机网站支付、电脑网站支付、周期扣款）
+- **海外支付**: 
+  - Google Play（应用内购买、订阅）
+  - Apple Store（应用内购买、订阅）
+- **Webhook处理**: 实时处理各支付渠道的异步通知
 - **高可用架构**: 支持分布式部署和负载均衡
 - **完善的监控**: 内置健康检查和日志记录
 - **容器化部署**: 支持Docker和Kubernetes部署
@@ -43,6 +71,9 @@
                     │  ┌─────────────────────┐  │
                     │  │  Payment Service    │  │
                     │  │ Subscription Service│  │
+                    │  │  Wechat Service     │  │
+                    │  │  Alipay Service     │  │
+                    │  │  Apple Service      │  │
                     │  │ Google Play Service │  │
                     │  └─────────────────────┘  │
                     └─────────────┬─────────────┘
@@ -58,8 +89,11 @@
                     ┌─────────────▼─────────────┐
                     │   External Services       │
                     │  ┌─────────────────────┐  │
+                    │  │   Wechat Pay API    │  │
+                    │  │   Alipay API        │  │
+                    │  │   Apple Store API   │  │
                     │  │   Google Play API   │  │
-                    │  │   Webhook Endpoint  │  │
+                    │  │   Webhook Endpoints │  │
                     │  └─────────────────────┘  │
                     └───────────────────────────┘
 ```
@@ -78,12 +112,20 @@ pay-gateway/
 │   │   ├── models.go            # 数据模型
 │   │   └── payment_models.go    # 支付相关模型
 │   ├── services/
+│   │   ├── wechat_service.go         # 微信支付服务
+│   │   ├── alipay_service.go         # 支付宝服务
+│   │   ├── apple_service.go          # Apple Store服务
 │   │   ├── google_play_service.go    # Google Play服务
 │   │   ├── payment_service.go        # 支付服务
-│   │   └── subscription_service.go   # 订阅服务
+│   │   ├── subscription_service.go   # 订阅服务
+│   │   └── payment_provider.go       # 统一支付接口
 │   ├── handlers/
 │   │   ├── handlers.go          # HTTP处理器
-│   │   └── webhook.go           # Webhook处理器
+│   │   ├── wechat_handler.go    # 微信支付处理器
+│   │   ├── alipay_handler.go    # 支付宝处理器
+│   │   ├── apple_handler.go     # Apple处理器
+│   │   ├── webhook.go           # Webhook处理器
+│   │   └── apple_webhook.go     # Apple Webhook处理器
 │   ├── middleware/
 │   │   └── middleware.go        # 中间件
 │   ├── routes/
@@ -164,6 +206,13 @@ make compose-down
 
 ## 📚 API文档
 
+完整的API使用指南请查看：
+- 📖 微信支付：[快速开始](docs/guides/wechat/quick-start.md)
+- 📖 支付宝：[快速开始](docs/guides/alipay/quick-start.md) 和 [完整指南](docs/guides/alipay/complete-guide.md)
+- 📖 Google Play：[快速开始](docs/guides/google-play/quick-start.md) 和 [完整指南](docs/guides/google-play/complete-guide.md)
+- 📖 Apple：[快速开始](docs/guides/apple/quick-start.md) 和 [完整指南](docs/guides/apple/complete-guide.md)
+- 📖 代码位置索引：[代码速查表](docs/references/code-map.md)
+
 ### 订单管理
 
 #### 创建订单
@@ -207,6 +256,42 @@ Content-Type: application/json
   "provider": "GOOGLE_PLAY",
   "purchase_token": "purchase_token_here",
   "developer_payload": "user_123"
+}
+```
+
+### 支付宝周期扣款（订阅）
+
+#### 创建周期扣款
+```http
+POST /api/v1/alipay/subscriptions
+Content-Type: application/json
+
+{
+  "user_id": 1,
+  "product_id": "premium_subscription",
+  "product_name": "Premium会员月度订阅",
+  "product_desc": "每月自动续费",
+  "period_type": "MONTH",
+  "period": 1,
+  "single_amount": 2999,
+  "personal_product_code": "CYCLE_PAY_AUTH_P",
+  "sign_scene": "INDUSTRY|MEDICAL_INSURANCE"
+}
+```
+
+#### 查询周期扣款
+```http
+GET /api/v1/alipay/subscriptions/query?out_request_no={out_request_no}
+```
+
+#### 取消周期扣款
+```http
+POST /api/v1/alipay/subscriptions/cancel
+Content-Type: application/json
+
+{
+  "out_request_no": "SUB20240105...",
+  "cancel_reason": "用户取消"
 }
 ```
 
@@ -256,6 +341,55 @@ Content-Type: application/json
 }
 ```
 
+### 微信支付接口
+
+#### 创建微信订单
+```http
+POST /api/v1/wechat/orders
+Content-Type: application/json
+
+{
+  "user_id": 1,
+  "product_id": "premium_upgrade",
+  "description": "Premium Upgrade",
+  "detail": "Unlock premium features",
+  "total_amount": 999,
+  "trade_type": "JSAPI"
+}
+```
+
+#### 创建JSAPI支付
+```http
+POST /api/v1/wechat/payments/jsapi/{order_no}
+Content-Type: application/json
+
+{
+  "openid": "user_openid"
+}
+```
+
+#### 创建Native支付
+```http
+POST /api/v1/wechat/payments/native/{order_no}
+```
+
+#### 查询订单
+```http
+GET /api/v1/wechat/orders/{order_no}
+```
+
+#### 退款
+```http
+POST /api/v1/wechat/refunds
+Content-Type: application/json
+
+{
+  "order_no": "WX20240101120000xxxxx",
+  "refund_amount": 999,
+  "refund_reason": "用户申请退款"
+}
+```
+
 ### 系统接口
 
 #### 健康检查
@@ -280,6 +414,19 @@ GET /health
 | `REDIS_PORT` | Redis端口 | `6379` |
 | `GOOGLE_SERVICE_ACCOUNT_FILE` | Google服务账户文件路径 | `service-account.json` |
 | `GOOGLE_PACKAGE_NAME` | Google Play包名 | `com.example.app` |
+| `WECHAT_APP_ID` | 微信应用ID | - |
+| `WECHAT_MCH_ID` | 微信商户号 | - |
+| `WECHAT_APIV3_KEY` | 微信API v3密钥 | - |
+| `WECHAT_SERIAL_NO` | 微信证书序列号 | - |
+| `WECHAT_PRIVATE_KEY` | 微信商户私钥 | - |
+| `WECHAT_NOTIFY_URL` | 微信支付通知URL | `https://your-domain.com/api/wechat/notify` |
+| `ALIPAY_APP_ID` | 支付宝应用ID | - |
+| `ALIPAY_PRIVATE_KEY` | 支付宝应用私钥 | - |
+| `ALIPAY_NOTIFY_URL` | 支付宝通知URL | `https://your-domain.com/api/alipay/notify` |
+| `APPLE_KEY_ID` | Apple私钥ID | - |
+| `APPLE_ISSUER_ID` | Apple发行者ID | - |
+| `APPLE_BUNDLE_ID` | iOS应用Bundle ID | `com.example.app` |
+| `APPLE_PRIVATE_KEY` | Apple私钥内容 | - |
 | `JWT_SECRET` | JWT密钥 | - |
 
 ### Google Play配置
