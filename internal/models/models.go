@@ -6,18 +6,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// PurchaseState 购买状态枚举类型
-type PurchaseState string
-
-const (
-	PurchaseStatePending   PurchaseState = "PENDING"
-	PurchaseStatePurchased PurchaseState = "PURCHASED"
-	PurchaseStateCancelled PurchaseState = "CANCELLED"
-	PurchaseStateRefunded  PurchaseState = "REFUNDED"
-	PurchaseStateExpired   PurchaseState = "EXPIRED"
-)
-
-// SubscriptionState 订阅状态枚举类型
+// SubscriptionState 订阅状态枚举类型（用于Google Play订阅）
 type SubscriptionState string
 
 const (
@@ -30,16 +19,8 @@ const (
 	SubscriptionStateInGracePeriod SubscriptionState = "IN_GRACE_PERIOD"
 )
 
-// ProductType 产品类型枚举类型
-type ProductType string
-
-const (
-	ProductTypeInApp        ProductType = "INAPP"
-	ProductTypeSubscription ProductType = "SUBSCRIPTION"
-)
-
 // User 用户模型
-// 使用UUID作为主键，支持软删除
+// 简化的用户模型，用于关联订单
 type User struct {
 	ID        uint           `gorm:"primarykey" json:"id"`
 	UUID      string         `gorm:"uniqueIndex;not null" json:"uuid"`
@@ -47,79 +28,6 @@ type User struct {
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
-
-	Purchases     []Purchase     `gorm:"foreignKey:UserID" json:"purchases,omitempty"`
-	Subscriptions []Subscription `gorm:"foreignKey:UserID" json:"subscriptions,omitempty"`
-}
-
-// Product 商品模型
-// 对应Google Play Console中配置的商品信息
-type Product struct {
-	ID          uint        `gorm:"primarykey" json:"id"`
-	ProductID   string      `gorm:"uniqueIndex;not null" json:"product_id"` // Google Play product ID
-	Type        ProductType `gorm:"not null" json:"type"`
-	Title       string      `json:"title"`
-	Description string      `json:"description"`
-	Price       int64       `json:"price"` // Price in micros (1,000,000 = 1 USD)
-	Currency    string      `json:"currency"`
-	CreatedAt   time.Time   `json:"created_at"`
-	UpdatedAt   time.Time   `json:"updated_at"`
-}
-
-// Purchase 购买记录模型
-// 记录用户的单次购买行为，包含购买状态和详细信息
-type Purchase struct {
-	ID                uint           `gorm:"primarykey" json:"id"`
-	UserID            uint           `gorm:"not null;index" json:"user_id"`
-	ProductID         string         `gorm:"not null;index" json:"product_id"`
-	PurchaseToken     string         `gorm:"uniqueIndex;not null" json:"purchase_token"`
-	OrderID           string         `gorm:"index" json:"order_id"`
-	State             PurchaseState  `gorm:"not null;index" json:"state"`
-	PurchaseTime      time.Time      `json:"purchase_time"`
-	ConsumptionState  int            `json:"consumption_state"`
-	DeveloperPayload  string         `json:"developer_payload"`
-	ObfuscatedAccount string         `json:"obfuscated_account"`
-	ObfuscatedProfile string         `json:"obfuscated_profile"`
-	RegionCode        string         `json:"region_code"`
-	CreatedAt         time.Time      `json:"created_at"`
-	UpdatedAt         time.Time      `json:"updated_at"`
-	DeletedAt         gorm.DeletedAt `gorm:"index" json:"-"`
-
-	User    User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Product Product `gorm:"foreignKey:ProductID;references:ProductID" json:"product,omitempty"`
-}
-
-// Subscription 订阅记录模型
-// 记录用户的订阅购买行为，包含订阅状态和续费信息
-type Subscription struct {
-	ID                      uint              `gorm:"primarykey" json:"id"`
-	UserID                  uint              `gorm:"not null;index" json:"user_id"`
-	ProductID               string            `gorm:"not null;index" json:"product_id"`
-	PurchaseToken           string            `gorm:"uniqueIndex;not null" json:"purchase_token"`
-	OrderID                 string            `gorm:"index" json:"order_id"`
-	State                   SubscriptionState `gorm:"not null;index" json:"state"`
-	AutoRenewing            bool              `json:"auto_renewing"`
-	Price                   int64             `json:"price"` // Price in micros
-	Currency                string            `json:"currency"`
-	Country                 string            `json:"country"`
-	StartTime               time.Time         `json:"start_time"`
-	ExpiryTime              time.Time         `json:"expiry_time"`
-	GracePeriodExpiryTime   *time.Time        `json:"grace_period_expiry_time,omitempty"`
-	CancelReason            *int              `json:"cancel_reason,omitempty"`
-	UserCancellationTime    *time.Time        `json:"user_cancellation_time,omitempty"`
-	AutoResumeTime          *time.Time        `json:"auto_resume_time,omitempty"`
-	PromoCode               *string           `json:"promo_code,omitempty"`
-	IntroductoryPrice       *int64            `json:"introductory_price,omitempty"`
-	IntroductoryPricePeriod *string           `json:"introductory_price_period,omitempty"`
-	IntroductoryPriceCycles *int              `json:"introductory_price_cycles,omitempty"`
-	ObfuscatedAccount       string            `json:"obfuscated_account"`
-	ObfuscatedProfile       string            `json:"obfuscated_profile"`
-	CreatedAt               time.Time         `json:"created_at"`
-	UpdatedAt               time.Time         `json:"updated_at"`
-	DeletedAt               gorm.DeletedAt    `gorm:"index" json:"-"`
-
-	User    User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Product Product `gorm:"foreignKey:ProductID;references:ProductID" json:"product,omitempty"`
 }
 
 // WebhookType Webhook类型

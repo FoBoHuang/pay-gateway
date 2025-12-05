@@ -136,6 +136,9 @@ func (s *paymentServiceImpl) GetOrder(ctx context.Context, orderID uint) (*model
 	err := s.db.WithContext(ctx).
 		Preload("User").
 		Preload("GooglePayment").
+		Preload("AlipayPayment").
+		Preload("ApplePayment").
+		Preload("WechatPayment").
 		First(&order, orderID).Error
 
 	if err != nil {
@@ -156,6 +159,9 @@ func (s *paymentServiceImpl) GetOrderByOrderNo(ctx context.Context, orderNo stri
 		Where("order_no = ?", orderNo).
 		Preload("User").
 		Preload("GooglePayment").
+		Preload("AlipayPayment").
+		Preload("ApplePayment").
+		Preload("WechatPayment").
 		First(&order).Error
 
 	if err != nil {
@@ -519,6 +525,8 @@ func (s *paymentServiceImpl) RefundPayment(ctx context.Context, orderID uint, am
 		provider = models.PaymentProviderAppleStore
 	} else if order.AlipayPayment != nil {
 		provider = models.PaymentProviderAlipay
+	} else if order.WechatPayment != nil {
+		provider = models.PaymentProviderWeChat
 	} else {
 		return fmt.Errorf("无法确定支付提供商")
 	}
@@ -600,6 +608,9 @@ func (s *paymentServiceImpl) GetUserOrders(ctx context.Context, userID uint, pag
 		Offset(offset).
 		Limit(pageSize).
 		Preload("GooglePayment").
+		Preload("AlipayPayment").
+		Preload("ApplePayment").
+		Preload("WechatPayment").
 		Find(&orders).Error
 
 	if err != nil {

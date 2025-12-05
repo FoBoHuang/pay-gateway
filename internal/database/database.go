@@ -94,15 +94,24 @@ func (d *Database) AutoMigrate() error {
 
 	// 迁移所有模型
 	err := d.DB.AutoMigrate(
+		// 基础模型
 		&models.User{},
-		&models.Product{},
-		&models.Purchase{},
-		&models.Subscription{},
 		&models.WebhookEvent{},
+
+		// 统一订单模型
 		&models.Order{},
-		&models.GooglePayment{},
 		&models.PaymentTransaction{},
 		&models.UserBalance{},
+
+		// 各支付方式的详情模型
+		&models.GooglePayment{},
+		&models.AlipayPayment{},
+		&models.AlipayRefund{},
+		&models.AlipaySubscription{},
+		&models.ApplePayment{},
+		&models.AppleRefund{},
+		&models.WechatPayment{},
+		&models.WechatRefund{},
 	)
 	if err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
