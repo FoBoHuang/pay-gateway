@@ -79,6 +79,18 @@ type GoogleCreateSubscriptionRequest struct {
 	DeveloperPayload string `json:"developer_payload"`
 }
 
+// GoogleCreatePurchaseRequest 创建Google内购订单请求
+type GoogleCreatePurchaseRequest struct {
+	UserID           uint   `json:"user_id" binding:"required"`
+	ProductID        string `json:"product_id" binding:"required"`
+	Title            string `json:"title" binding:"required"`
+	Description      string `json:"description"`
+	Quantity         int    `json:"quantity" binding:"required,min=1"`
+	Currency         string `json:"currency" binding:"required,len=3"`
+	Price            int64  `json:"price" binding:"required,min=0"`
+	DeveloperPayload string `json:"developer_payload"`
+}
+
 // ==================== 购买验证接口 ====================
 
 // VerifyPurchase 验证Google Play购买
@@ -241,7 +253,54 @@ func (h *GoogleHandler) ConsumePurchase(c *gin.Context) {
 	SuccessJSON(c, gin.H{"message": "购买消费成功"})
 }
 
-// ==================== 订阅管理接口 ====================
+// ==================== 订单创建接口 ====================
+
+// CreatePurchaseOrder 创建Google内购订单
+// @Summary 创建Google内购订单
+// @Description 创建新的Google Play一次性购买订单
+// @Tags Google Play
+// @Accept json
+// @Produce json
+// @Param request body GoogleCreatePurchaseRequest true "创建内购订单请求"
+// @Success 200 {object} Response{data=models.Order}
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/google/purchases [post]
+func (h *GoogleHandler) CreatePurchaseOrder(c *gin.Context) {
+	var req GoogleCreatePurchaseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("创建内购订单请求参数错误", zap.Error(err))
+		ErrorJSON(c, 400, "请求参数错误", err)
+		return
+	}
+
+	// 创建内购订单
+	orderReq := &services.CreateOrderRequest{
+		UserID:           req.UserID,
+		ProductID:        req.ProductID,
+		Type:             models.OrderTypePurchase,
+		Title:            req.Title,
+		Description:      req.Description,
+		Quantity:         req.Quantity,
+		Currency:         req.Currency,
+		TotalAmount:      req.Price * int64(req.Quantity),
+		PaymentMethod:    models.PaymentMethodGooglePlay,
+		DeveloperPayload: req.DeveloperPayload,
+	}
+
+	order, err := h.paymentService.CreateOrder(c.Request.Context(), orderReq)
+	if err != nil {
+		h.logger.Error("创建Google内购订单失败", zap.Error(err))
+		ErrorJSON(c, 500, "创建内购订单失败", err)
+		return
+	}
+
+	h.logger.Info("Google内购订单创建成功",
+		zap.Uint("order_id", order.ID),
+		zap.String("product_id", req.ProductID))
+
+	SuccessJSON(c, order)
+}
 
 // CreateSubscription 创建Google订阅订单
 // @Summary 创建Google订阅订单
@@ -381,4 +440,3 @@ func (h *GoogleHandler) errorResponse(c *gin.Context, code int, message string, 
 	}
 	c.JSON(http.StatusOK, response)
 }
-

@@ -70,6 +70,10 @@ func SetupRoutes(
 		// ---------- Google Play路由 ----------
 		google := v1.Group("/google")
 		{
+			// 订单创建
+			google.POST("/purchases", googleHandler.CreatePurchaseOrder)    // 创建内购订单
+			google.POST("/subscriptions", googleHandler.CreateSubscription) // 创建订阅订单
+
 			// 购买验证
 			google.POST("/verify-purchase", googleHandler.VerifyPurchase)         // 验证购买
 			google.POST("/verify-subscription", googleHandler.VerifySubscription) // 验证订阅
@@ -81,8 +85,7 @@ func SetupRoutes(
 			// 消费购买
 			google.POST("/consume-purchase", googleHandler.ConsumePurchase) // 消费购买
 
-			// 订阅管理
-			google.POST("/subscriptions", googleHandler.CreateSubscription)                 // 创建订阅订单
+			// 订阅查询
 			google.GET("/subscriptions/status", googleHandler.GetSubscriptionStatus)        // 获取订阅状态
 			google.GET("/users/:user_id/subscriptions", googleHandler.GetUserSubscriptions) // 获取用户订阅
 		}
@@ -105,6 +108,10 @@ func SetupRoutes(
 		// ---------- Apple路由 ----------
 		apple := v1.Group("/apple")
 		{
+			// 订单创建
+			apple.POST("/purchases", appleHandler.CreatePurchaseOrder)         // 创建内购订单
+			apple.POST("/subscriptions", appleHandler.CreateSubscriptionOrder) // 创建订阅订单
+
 			// 收据验证
 			apple.POST("/verify-receipt", appleHandler.VerifyReceipt)         // 验证收据
 			apple.POST("/verify-transaction", appleHandler.VerifyTransaction) // 验证交易
@@ -113,7 +120,7 @@ func SetupRoutes(
 			// 交易历史
 			apple.GET("/transactions/:original_transaction_id/history", appleHandler.GetTransactionHistory) // 获取交易历史
 
-			// 订阅管理
+			// 订阅查询
 			apple.GET("/subscriptions/:original_transaction_id/status", appleHandler.GetSubscriptionStatus) // 获取订阅状态
 		}
 

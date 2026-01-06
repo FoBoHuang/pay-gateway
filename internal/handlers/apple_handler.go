@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"pay-gateway/internal/models"
 	"pay-gateway/internal/services"
 )
 
@@ -43,6 +44,136 @@ type AppleTransactionRequest struct {
 	TransactionID string `json:"transaction_id" binding:"required"`
 	OrderID       uint   `json:"order_id" binding:"required"`
 }
+
+// AppleCreatePurchaseRequest 创建Apple内购订单请求
+type AppleCreatePurchaseRequest struct {
+	UserID           uint   `json:"user_id" binding:"required"`
+	ProductID        string `json:"product_id" binding:"required"`
+	Title            string `json:"title" binding:"required"`
+	Description      string `json:"description"`
+	Quantity         int    `json:"quantity" binding:"required,min=1"`
+	Currency         string `json:"currency" binding:"required,len=3"`
+	Price            int64  `json:"price" binding:"required,min=0"`
+	DeveloperPayload string `json:"developer_payload"`
+}
+
+// AppleCreateSubscriptionRequest 创建Apple订阅订单请求
+type AppleCreateSubscriptionRequest struct {
+	UserID           uint   `json:"user_id" binding:"required"`
+	ProductID        string `json:"product_id" binding:"required"`
+	Title            string `json:"title" binding:"required"`
+	Description      string `json:"description"`
+	Currency         string `json:"currency" binding:"required,len=3"`
+	Price            int64  `json:"price" binding:"required,min=0"`
+	Period           string `json:"period" binding:"required"` // P1W, P1M, P1Y等
+	DeveloperPayload string `json:"developer_payload"`
+}
+
+// ==================== 订单创建接口 ====================
+
+// CreatePurchaseOrder 创建Apple内购订单
+// @Summary 创建Apple内购订单
+// @Description 创建新的Apple一次性购买订单
+// @Tags Apple
+// @Accept json
+// @Produce json
+// @Param request body AppleCreatePurchaseRequest true "创建内购订单请求"
+// @Success 200 {object} Response{data=models.Order}
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/apple/purchases [post]
+func (h *AppleHandler) CreatePurchaseOrder(c *gin.Context) {
+	var req AppleCreatePurchaseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("创建内购订单请求参数错误", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数错误", "details": err.Error()})
+		return
+	}
+
+	// 创建内购订单
+	orderReq := &services.CreateOrderRequest{
+		UserID:           req.UserID,
+		ProductID:        req.ProductID,
+		Type:             models.OrderTypePurchase,
+		Title:            req.Title,
+		Description:      req.Description,
+		Quantity:         req.Quantity,
+		Currency:         req.Currency,
+		TotalAmount:      req.Price * int64(req.Quantity),
+		PaymentMethod:    models.PaymentMethodAppleStore,
+		DeveloperPayload: req.DeveloperPayload,
+	}
+
+	order, err := h.paymentService.CreateOrder(c.Request.Context(), orderReq)
+	if err != nil {
+		h.logger.Error("创建Apple内购订单失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建内购订单失败", "details": err.Error()})
+		return
+	}
+
+	h.logger.Info("Apple内购订单创建成功",
+		zap.Uint("order_id", order.ID),
+		zap.String("product_id", req.ProductID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "内购订单创建成功",
+		"data":    order,
+	})
+}
+
+// CreateSubscriptionOrder 创建Apple订阅订单
+// @Summary 创建Apple订阅订单
+// @Description 创建新的Apple订阅订单
+// @Tags Apple
+// @Accept json
+// @Produce json
+// @Param request body AppleCreateSubscriptionRequest true "创建订阅订单请求"
+// @Success 200 {object} Response{data=models.Order}
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/apple/subscriptions [post]
+func (h *AppleHandler) CreateSubscriptionOrder(c *gin.Context) {
+	var req AppleCreateSubscriptionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("创建订阅订单请求参数错误", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数错误", "details": err.Error()})
+		return
+	}
+
+	// 创建订阅订单
+	orderReq := &services.CreateOrderRequest{
+		UserID:           req.UserID,
+		ProductID:        req.ProductID,
+		Type:             models.OrderTypeSubscription,
+		Title:            req.Title,
+		Description:      req.Description,
+		Quantity:         1,
+		Currency:         req.Currency,
+		TotalAmount:      req.Price,
+		PaymentMethod:    models.PaymentMethodAppleStore,
+		DeveloperPayload: req.DeveloperPayload,
+	}
+
+	order, err := h.paymentService.CreateOrder(c.Request.Context(), orderReq)
+	if err != nil {
+		h.logger.Error("创建Apple订阅订单失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建订阅订单失败", "details": err.Error()})
+		return
+	}
+
+	h.logger.Info("Apple订阅订单创建成功",
+		zap.Uint("order_id", order.ID),
+		zap.String("product_id", req.ProductID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "订阅订单创建成功",
+		"data":    order,
+	})
+}
+
+// ==================== 收据验证接口 ====================
 
 // AppleVerifyReceipt 验证Apple收据
 // @Summary 验证Apple收据
