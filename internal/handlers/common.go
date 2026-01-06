@@ -51,14 +51,6 @@ type CreateOrderRequest struct {
 	DeveloperPayload string               `json:"developer_payload"`
 }
 
-// ProcessPaymentRequest 处理支付请求
-type ProcessPaymentRequest struct {
-	OrderID          uint                   `json:"order_id" binding:"required"`
-	Provider         models.PaymentProvider `json:"provider" binding:"required"`
-	PurchaseToken    string                 `json:"purchase_token" binding:"required"`
-	DeveloperPayload string                 `json:"developer_payload"`
-}
-
 // CreateSubscriptionRequest 创建订阅请求
 type CreateSubscriptionRequest struct {
 	UserID           uint                 `json:"user_id" binding:"required"`
@@ -271,43 +263,6 @@ func (h *CommonHandler) GetUserOrders(c *gin.Context) {
 	})
 }
 
-// ProcessPayment 处理支付
-// @Summary 处理支付
-// @Description 处理订单支付
-// @Tags 支付管理
-// @Accept json
-// @Produce json
-// @Param request body ProcessPaymentRequest true "支付请求"
-// @Success 200 {object} Response{data=models.PaymentTransaction}
-// @Failure 400 {object} ErrorResponse
-// @Failure 500 {object} ErrorResponse
-// @Router /api/v1/payments/process [post]
-func (h *CommonHandler) ProcessPayment(c *gin.Context) {
-	var req ProcessPaymentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Error("支付请求参数错误", zap.Error(err))
-		h.errorResponse(c, 400, "请求参数错误", err)
-		return
-	}
-
-	serviceReq := &services.ProcessPaymentRequest{
-		OrderID:          req.OrderID,
-		Provider:         req.Provider,
-		PurchaseToken:    req.PurchaseToken,
-		DeveloperPayload: req.DeveloperPayload,
-	}
-
-	transaction, err := h.paymentService.ProcessPayment(c.Request.Context(), serviceReq)
-	if err != nil {
-		h.logger.Error("处理支付失败", zap.Error(err))
-		h.errorResponse(c, 500, "处理支付失败", err)
-		return
-	}
-
-	h.logger.Info("支付处理成功", zap.String("transaction_id", transaction.TransactionID))
-	h.successResponse(c, transaction)
-}
-
 // HealthCheck 健康检查
 // @Summary 健康检查
 // @Description 检查服务健康状态
@@ -367,4 +322,3 @@ func ErrorJSON(c *gin.Context, code int, message string, err error) {
 	}
 	c.JSON(http.StatusOK, response)
 }
-

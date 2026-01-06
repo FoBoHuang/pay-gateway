@@ -61,12 +61,6 @@ func SetupRoutes(
 			orders.POST("/:id/cancel", commonHandler.CancelOrder)        // 取消订单
 		}
 
-		// ---------- 通用支付路由 ----------
-		payments := v1.Group("/payments")
-		{
-			payments.POST("/process", commonHandler.ProcessPayment) // 处理支付
-		}
-
 		// ---------- 用户相关路由 ----------
 		users := v1.Group("/users")
 		{

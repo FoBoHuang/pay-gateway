@@ -1,13 +1,10 @@
 package handlers
 
 import (
-	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
@@ -45,8 +42,8 @@ type AppleWebhookRequest struct {
 
 // HandleAppleWebhook 处理Apple Webhook
 // @Summary 处理Apple Webhook
-// @Description 接收并处理Apple的Webhook通知
-// @Tags Webhook
+// @Description 接收并处理Apple App Store Server Notifications V2
+// @Tags Apple Webhook
 // @Accept json
 // @Produce json
 // @Param request body AppleWebhookRequest true "Webhook请求"
@@ -55,12 +52,10 @@ type AppleWebhookRequest struct {
 // @Failure 500 {object} ErrorResponse
 // @Router /webhook/apple [post]
 func (h *AppleWebhookHandler) HandleAppleWebhook(c *gin.Context) {
-	ctx := context.Background()
-
 	// 读取请求体
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		h.logger.Error("failed to read Apple webhook body",
+		h.logger.Error("Failed to read Apple webhook body",
 			zap.Error(err),
 		)
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -69,35 +64,32 @@ func (h *AppleWebhookHandler) HandleAppleWebhook(c *gin.Context) {
 		return
 	}
 
+	h.logger.Debug("Received Apple webhook",
+		zap.String("body", string(body)),
+	)
+
+	// 解析请求
 	var request AppleWebhookRequest
-	if err := json.Unmarshal(body, &request); err != nil {
-		h.logger.Error("failed to unmarshal Apple webhook request",
-			zap.Error(err),
-			zap.String("body", string(body)),
-		)
+
+	// Apple发送的是 {"signedPayload": "xxx"} 格式
+	if err := c.ShouldBindJSON(&request); err != nil {
+		// 尝试直接使用body作为signedPayload（某些情况下可能直接发送JWT字符串）
+		request.SignedPayload = string(body)
+	}
+
+	if request.SignedPayload == "" {
+		h.logger.Error("Empty signedPayload in Apple webhook")
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request format",
+			"error": "Empty signedPayload",
 		})
 		return
 	}
 
-	// 验证签名
-	if err := h.validateSignature(c.Request); err != nil {
-		h.logger.Error("Apple webhook signature validation failed",
-			zap.Error(err),
-		)
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error": "Invalid signature",
-		})
-		return
-	}
-
-	// 解析通知
+	// 解析通知（ParseNotification内部会验证签名）
 	notification, err := h.appleService.ParseNotification(request.SignedPayload)
 	if err != nil {
-		h.logger.Error("failed to parse Apple notification",
+		h.logger.Error("Failed to parse Apple notification",
 			zap.Error(err),
-			zap.String("signed_payload", request.SignedPayload),
 		)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "Failed to parse notification",
@@ -105,46 +97,36 @@ func (h *AppleWebhookHandler) HandleAppleWebhook(c *gin.Context) {
 		return
 	}
 
+	h.logger.Info("Parsed Apple notification",
+		zap.String("notification_type", notification.NotificationType),
+		zap.String("subtype", notification.Subtype),
+		zap.String("notification_uuid", notification.NotificationUUID),
+	)
+
 	// 处理通知
-	if err := h.processNotification(ctx, notification); err != nil {
-		h.logger.Error("failed to process Apple notification",
+	if err := h.appleService.HandleNotification(c.Request.Context(), notification); err != nil {
+		h.logger.Error("Failed to process Apple notification",
 			zap.Error(err),
+			zap.String("notification_type", notification.NotificationType),
+			zap.String("notification_uuid", notification.NotificationUUID),
 		)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to process notification",
+		// 即使处理失败，也返回200，避免Apple重复发送
+		// 但记录错误以便后续处理
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "error",
+			"message": "Notification received but processing failed",
+			"error":   err.Error(),
 		})
 		return
 	}
+
+	h.logger.Info("Apple notification processed successfully",
+		zap.String("notification_type", notification.NotificationType),
+		zap.String("notification_uuid", notification.NotificationUUID),
+	)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
 		"message": "Notification processed successfully",
 	})
-}
-
-// validateSignature 验证Apple Webhook签名
-func (h *AppleWebhookHandler) validateSignature(r *http.Request) error {
-	// Apple使用JWT签名，我们需要验证JWT的有效性
-	// 这里需要根据Apple的文档实现具体的签名验证逻辑
-	// 暂时返回nil，实际需要实现完整的签名验证
-
-	// TODO: 实现Apple Webhook签名验证
-	// 参考：https://developer.apple.com/documentation/appstoreservernotifications/signed_payloads
-
-	return nil
-}
-
-// processNotification 处理Apple通知
-func (h *AppleWebhookHandler) processNotification(ctx context.Context, notification *jwt.Token) error {
-	h.logger.Info("Processing Apple notification",
-		zap.Any("notification", notification),
-	)
-
-	// 这里需要根据实际的通知类型来处理不同的业务逻辑
-	// 暂时只记录日志，实际需要实现具体的业务逻辑
-	h.logger.Info("Apple notification processed",
-		zap.Any("notification", notification),
-	)
-
-	return nil
 }
