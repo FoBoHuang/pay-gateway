@@ -15,7 +15,7 @@
 ### 🚀 快速开始（按支付方式）
 
 - 💳 [微信支付](docs/guides/wechat/quick-start.md) - JSAPI、Native、APP、H5
-- 💰 [支付宝](docs/guides/alipay/quick-start.md) - WAP、PAGE、周期扣款
+- 💰 [支付宝](docs/guides/alipay/quick-start.md) - WAP、PAGE、APP、周期扣款
 - 🤖 [Google Play](docs/guides/google-play/quick-start.md) - 内购和订阅
 - 🍎 [Apple](docs/guides/apple/quick-start.md) - 内购和订阅
 
@@ -32,7 +32,7 @@
 - **统一的接口设计**: 提供统一的API接口，屏蔽不同支付渠道的差异
 - **国内支付**: 
   - 微信支付（JSAPI、Native、APP、H5）
-  - 支付宝（手机网站支付、电脑网站支付、周期扣款）
+  - 支付宝（手机网站支付、电脑网站支付、App支付、周期扣款）
 - **海外支付**: 
   - Google Play（应用内购买、订阅）
   - Apple Store（应用内购买、订阅）

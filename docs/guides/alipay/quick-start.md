@@ -22,7 +22,7 @@ POST   /api/v1/alipay/subscriptions/cancel  # 取消签约
 
 ## 使用示例
 
-### 手机网站支付
+### 手机网站支付 (WAP)
 ```bash
 # 1. 创建订单
 curl -X POST http://localhost:8080/api/v1/alipay/orders \
@@ -31,7 +31,26 @@ curl -X POST http://localhost:8080/api/v1/alipay/orders \
 
 # 2. 创建支付
 curl -X POST http://localhost:8080/api/v1/alipay/payments \
+  -H "Content-Type: application/json" \
   -d '{"order_no": "ORD...", "pay_type": "WAP"}'
+```
+
+### 电脑网站支付 (PAGE)
+```bash
+# 创建支付
+curl -X POST http://localhost:8080/api/v1/alipay/payments \
+  -H "Content-Type: application/json" \
+  -d '{"order_no": "ORD...", "pay_type": "PAGE"}'
+```
+
+### App支付 (APP)
+```bash
+# 创建支付
+curl -X POST http://localhost:8080/api/v1/alipay/payments \
+  -H "Content-Type: application/json" \
+  -d '{"order_no": "ORD...", "pay_type": "APP"}'
+
+# 返回的 payment_url 是支付参数字符串，需在App中调用支付宝SDK
 ```
 
 ### 周期扣款（订阅）

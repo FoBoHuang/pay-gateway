@@ -47,7 +47,7 @@ type CreateAlipayOrderResponse struct {
 // CreateAlipayPaymentRequest 创建支付宝支付请求
 type CreateAlipayPaymentRequest struct {
 	OrderNo string `json:"order_no" binding:"required"`
-	PayType string `json:"pay_type" binding:"required,oneof=WAP PAGE"`
+	PayType string `json:"pay_type" binding:"required,oneof=WAP PAGE APP"`
 }
 
 // CreateAlipayPaymentResponse 创建支付宝支付响应
@@ -156,6 +156,8 @@ func (h *AlipayHandler) CreateAlipayPayment(c *gin.Context) {
 		paymentURL, err = h.alipayService.CreateWapPayment(c.Request.Context(), req.OrderNo)
 	case "PAGE":
 		paymentURL, err = h.alipayService.CreatePagePayment(c.Request.Context(), req.OrderNo)
+	case "APP":
+		paymentURL, err = h.alipayService.CreateAppPayment(c.Request.Context(), req.OrderNo)
 	default:
 		h.errorResponse(c, 400, "不支持的支付类型", nil)
 		return

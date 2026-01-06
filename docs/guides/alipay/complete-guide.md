@@ -22,6 +22,7 @@
 - ✅ 创建订单
 - ✅ 手机网站支付 (Wap)
 - ✅ 电脑网站支付 (Page)
+- ✅ App支付 (App)
 - ✅ 查询订单状态
 - ✅ 退款
 - ✅ 异步通知处理
@@ -171,6 +172,60 @@ curl -X POST http://localhost:8080/api/v1/alipay/payments \
 ```
 
 客户端需要跳转到 `payment_url` 进行支付。
+
+#### 2.3 App支付 (APP)
+
+**请求示例**：
+
+```bash
+curl -X POST http://localhost:8080/api/v1/alipay/payments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_no": "ORD20240105120000abcdef12",
+    "pay_type": "APP"
+  }'
+```
+
+**响应示例**：
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "payment_url": "alipay_sdk=alipay-sdk-java-4.9.28.ALL&app_id=2021001234567890&...",
+    "order_no": "ORD20240105120000abcdef12"
+  }
+}
+```
+
+**客户端集成**：
+
+返回的 `payment_url` 是经过编码的支付参数字符串，需要在客户端调用支付宝SDK进行支付：
+
+**iOS示例**：
+```swift
+// 调用支付宝SDK
+[[AlipaySDK defaultService] payOrder:paymentUrl fromScheme:appScheme callback:^(NSDictionary *resultDic) {
+    // 处理支付结果
+}];
+```
+
+**Android示例**：
+```java
+// 在独立的线程中调用
+new Thread(() -> {
+    PayTask alipay = new PayTask(activity);
+    Map<String, String> result = alipay.payV2(paymentUrl, true);
+    // 处理支付结果
+}).start();
+```
+
+**注意事项**：
+- App支付需要在移动应用中集成支付宝SDK
+- 返回的参数字符串不需要进行URL编码
+- 支付结果会通过SDK回调返回，同时服务端会收到异步通知
+- 需要在支付宝开放平台配置应用包名（Android）或Bundle ID（iOS）
 
 ### 3. 查询订单
 
@@ -511,9 +566,10 @@ curl -X POST http://localhost:8080/api/v1/alipay/subscriptions/cancel \
 | 创建订单 | `alipay_service.go` | 第57-131行 |
 | 手机网站支付 | `alipay_service.go` | 第134-164行 |
 | 电脑网站支付 | `alipay_service.go` | 第167-197行 |
-| 异步通知处理 | `alipay_service.go` | 第200-304行 |
-| 查询订单 | `alipay_service.go` | 第307-361行 |
-| 退款 | `alipay_service.go` | 第364-447行 |
+| App支付 | `alipay_service.go` | 第200-229行 |
+| 异步通知处理 | `alipay_service.go` | 第232-336行 |
+| 查询订单 | `alipay_service.go` | 第339-393行 |
+| 退款 | `alipay_service.go` | 第396-479行 |
 
 ### 支付宝周期扣款
 
@@ -544,8 +600,16 @@ curl -X POST http://localhost:8080/api/v1/alipay/subscriptions/cancel \
 
 支付宝支付和周期扣款功能已全部实现，包括：
 
-✅ **支付功能**：创建订单、发起支付、查询、退款、通知处理  
+✅ **支付功能**：创建订单、发起支付（WAP/PAGE/APP）、查询、退款、通知处理  
 ✅ **周期扣款**：签约、查询、解约、签约通知、扣款通知
 
 所有代码已经过整理，结构清晰，易于使用和维护。
+
+### 支付方式对比
+
+| 支付方式 | 场景 | 返回内容 | 客户端处理 |
+|---------|------|---------|-----------|
+| WAP | 手机浏览器 | 支付URL | 跳转到URL |
+| PAGE | 电脑浏览器 | 支付URL | 跳转到URL |
+| APP | 原生App | 支付参数字符串 | 调用支付宝SDK |
 

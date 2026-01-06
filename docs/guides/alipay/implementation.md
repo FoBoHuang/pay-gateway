@@ -8,9 +8,10 @@
 1. ✅ 创建订单
 2. ✅ 手机网站支付 (WAP)
 3. ✅ 电脑网站支付 (PAGE)
-4. ✅ 查询订单状态
-5. ✅ 退款
-6. ✅ 异步通知处理（包括签名验证）
+4. ✅ App支付 (APP)
+5. ✅ 查询订单状态
+6. ✅ 退款
+7. ✅ 异步通知处理（包括签名验证）
 
 ### ✅ 支付宝周期扣款（订阅）- 已完整实现
 
@@ -36,6 +37,7 @@
 CreateOrder(ctx, req)              // 创建订单
 CreateWapPayment(ctx, orderNo)     // 创建手机网站支付
 CreatePagePayment(ctx, orderNo)    // 创建电脑网站支付
+CreateAppPayment(ctx, orderNo)     // 创建App支付
 QueryOrder(ctx, orderNo)           // 查询订单
 Refund(ctx, req)                   // 退款
 HandleNotify(ctx, notifyData)      // 处理支付通知
@@ -132,12 +134,29 @@ curl -X POST http://localhost:8080/api/v1/alipay/orders \
     "total_amount": 2999
   }'
 
-# 2. 创建支付（获取支付URL）
+# 2. 创建支付（获取支付URL或支付参数）
+# WAP支付（手机浏览器）
 curl -X POST http://localhost:8080/api/v1/alipay/payments \
   -H "Content-Type: application/json" \
   -d '{
     "order_no": "ORD20240105120000abcdef12",
     "pay_type": "WAP"
+  }'
+
+# PAGE支付（电脑浏览器）
+curl -X POST http://localhost:8080/api/v1/alipay/payments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_no": "ORD20240105120000abcdef12",
+    "pay_type": "PAGE"
+  }'
+
+# APP支付（原生App）
+curl -X POST http://localhost:8080/api/v1/alipay/payments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_no": "ORD20240105120000abcdef12",
+    "pay_type": "APP"
   }'
 
 # 3. 用户跳转到支付URL完成支付
@@ -246,6 +265,7 @@ curl -X POST http://localhost:8080/api/v1/alipay/subscriptions/cancel \
 - [x] 创建订单
 - [x] 创建WAP支付
 - [x] 创建PAGE支付
+- [x] 创建APP支付
 - [x] 查询订单（未支付）
 - [x] 查询订单（已支付）
 - [x] 退款
@@ -375,10 +395,10 @@ go build -o build/pay-gateway ./cmd/server/
 支付宝支付和周期扣款功能已**完整实现**，代码结构清晰，功能完善。
 
 **实现内容**：
-- ✅ 支付宝支付（WAP、PAGE）
+- ✅ 支付宝支付（WAP、PAGE、APP）
 - ✅ 支付宝周期扣款（签约、扣款、解约）
 - ✅ 完整的异步通知处理
-- ✅ 详细的API文档
+- ✅ 详细的API文档和客户端集成指南
 - ✅ 清晰的代码组织
 
 **代码位置**：

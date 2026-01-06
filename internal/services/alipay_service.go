@@ -196,6 +196,38 @@ func (s *AlipayService) CreatePagePayment(ctx context.Context, orderNo string) (
 	return url.String(), nil
 }
 
+// CreateAppPayment 创建App支付
+func (s *AlipayService) CreateAppPayment(ctx context.Context, orderNo string) (string, error) {
+	// 查询订单
+	var order models.Order
+	if err := s.db.Where("order_no = ?", orderNo).First(&order).Error; err != nil {
+		return "", fmt.Errorf("订单不存在: %v", err)
+	}
+
+	// 查询支付宝支付记录
+	var alipayPayment models.AlipayPayment
+	if err := s.db.Where("order_id = ?", order.ID).First(&alipayPayment).Error; err != nil {
+		return "", fmt.Errorf("支付宝支付记录不存在: %v", err)
+	}
+
+	// 构建支付请求
+	p := alipay.TradeAppPay{}
+	p.NotifyURL = s.config.NotifyURL
+	p.Subject = alipayPayment.Subject
+	p.OutTradeNo = alipayPayment.OutTradeNo
+	p.TotalAmount = alipayPayment.TotalAmount
+	p.ProductCode = "QUICK_MSECURITY_PAY"
+	p.TimeoutExpress = alipayPayment.TimeoutExpress
+
+	// 生成支付参数字符串
+	payParam, err := s.client.TradeAppPay(p)
+	if err != nil {
+		return "", fmt.Errorf("创建App支付参数失败: %v", err)
+	}
+
+	return payParam, nil
+}
+
 // HandleNotify 处理支付宝异步通知
 func (s *AlipayService) HandleNotify(ctx context.Context, notifyData map[string]string) error {
 	// 验证签名
