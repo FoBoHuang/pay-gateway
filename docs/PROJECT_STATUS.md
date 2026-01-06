@@ -182,9 +182,8 @@
 
 - ✅ **分层架构** - Handler → Service → Model
 - ✅ **依赖注入** - 通过构造函数注入依赖
-- ✅ **接口抽象** - PaymentService、SubscriptionService接口
-- ✅ **适配器模式** - 统一支付接口适配器
-- ✅ **注册表模式** - PaymentProviderRegistry
+- ✅ **接口抽象** - PaymentService接口
+- ✅ **服务分离** - 每种支付方式独立服务类
 
 ---
 

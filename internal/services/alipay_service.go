@@ -578,15 +578,39 @@ func (s *AlipayService) CreateSubscription(ctx context.Context, req *CreateAlipa
 		return nil, fmt.Errorf("提交事务失败: %v", err)
 	}
 
-	// 构建签约请求
-	// 注意：实际应用中需要调用支付宝签约API
-	// 这里返回签约URL供客户端跳转
-	signURL := fmt.Sprintf("https://openapi.alipay.com/gateway.do?method=alipay.user.agreement.page.sign&out_request_no=%s", outRequestNo)
+	// 构建签约请求参数
+	p := alipay.AgreementPageSign{}
+	p.NotifyURL = s.config.NotifyURL
+	p.ReturnURL = s.config.ReturnURL
+	p.PersonalProductCode = req.PersonalProductCode
+	p.SignScene = req.SignScene
+	p.ExternalAgreementNo = outRequestNo
+
+	// 设置周期扣款规则
+	p.PeriodRuleParams = &alipay.PeriodRuleParams{
+		PeriodType:    req.PeriodType,
+		Period:        fmt.Sprintf("%d", req.Period),
+		ExecuteTime:   executionTime.Format("2006-01-02"),
+		SingleAmount:  formatAmount(req.SingleAmount),
+		TotalAmount:   formatAmount(req.TotalAmount),
+		TotalPayments: req.TotalPayments,
+	}
+
+	// 设置产品信息
+	p.AccessParams = &alipay.AccessParams{
+		Channel: "ALIPAYAPP", // 或 PCWEB、QRCODE 根据场景选择
+	}
+
+	// 生成签约URL
+	signURL, err := s.client.AgreementPageSign(p)
+	if err != nil {
+		return nil, fmt.Errorf("生成签约URL失败: %v", err)
+	}
 
 	return &CreateAlipaySubscriptionResponse{
 		OrderID:       order.ID,
 		OutRequestNo:  outRequestNo,
-		SignURL:       signURL,
+		SignURL:       signURL.String(),
 		Status:        "TEMP",
 		ExecutionTime: executionTime,
 	}, nil
@@ -599,8 +623,45 @@ func (s *AlipayService) QuerySubscription(ctx context.Context, outRequestNo stri
 		return nil, fmt.Errorf("周期扣款协议不存在: %v", err)
 	}
 
-	// 实际应用中应该调用支付宝API查询最新状态
+	// 如果已有协议号，调用支付宝API查询最新状态
+	if subscription.AgreementNo != "" {
+		p := alipay.AgreementQuery{}
+		p.AgreementNo = subscription.AgreementNo
 
+		result, err := s.client.AgreementQuery(ctx, p)
+		if err != nil {
+			// API调用失败，返回本地数据
+			return s.buildSubscriptionResponse(&subscription), nil
+		}
+
+		// 更新本地数据
+		if result.Code.IsSuccess() {
+			subscription.Status = result.Status
+			if result.SignTime != "" {
+				if t, err := time.Parse("2006-01-02 15:04:05", result.SignTime); err == nil {
+					subscription.SignTime = &t
+				}
+			}
+			if result.ValidTime != "" {
+				if t, err := time.Parse("2006-01-02 15:04:05", result.ValidTime); err == nil {
+					subscription.ValidTime = &t
+				}
+			}
+			if result.InvalidTime != "" {
+				if t, err := time.Parse("2006-01-02 15:04:05", result.InvalidTime); err == nil {
+					subscription.InvalidTime = &t
+				}
+			}
+			// 保存更新
+			s.db.Save(&subscription)
+		}
+	}
+
+	return s.buildSubscriptionResponse(&subscription), nil
+}
+
+// buildSubscriptionResponse 构建订阅查询响应
+func (s *AlipayService) buildSubscriptionResponse(subscription *models.AlipaySubscription) *QueryAlipaySubscriptionResponse {
 	return &QueryAlipaySubscriptionResponse{
 		OutRequestNo:        subscription.OutRequestNo,
 		AgreementNo:         subscription.AgreementNo,
@@ -620,7 +681,7 @@ func (s *AlipayService) QuerySubscription(ctx context.Context, outRequestNo stri
 		NextDeductTime:      subscription.NextDeductTime,
 		DeductSuccessCount:  subscription.DeductSuccessCount,
 		DeductFailCount:     subscription.DeductFailCount,
-	}, nil
+	}
 }
 
 // CancelSubscription 解约（取消周期扣款）
@@ -635,10 +696,25 @@ func (s *AlipayService) CancelSubscription(ctx context.Context, req *CancelAlipa
 		return errors.New("协议已停止，无需重复解约")
 	}
 
-	// 实际应用中应该调用支付宝解约API
-	// p := alipay.UserAgreementUnsign{}
-	// p.AgreementNo = subscription.AgreementNo
-	// result, err := s.client.UserAgreementUnsign(ctx, p)
+	// 必须有协议号才能解约
+	if subscription.AgreementNo == "" {
+		return errors.New("协议尚未签约完成，无法解约")
+	}
+
+	// 调用支付宝解约API
+	p := alipay.AgreementUnsign{}
+	p.AgreementNo = subscription.AgreementNo
+	p.ExternalAgreementNo = subscription.OutRequestNo
+
+	result, err := s.client.AgreementUnsign(ctx, p)
+	if err != nil {
+		return fmt.Errorf("调用支付宝解约接口失败: %v", err)
+	}
+
+	// 检查返回结果
+	if !result.Code.IsSuccess() {
+		return fmt.Errorf("支付宝解约失败: %s - %s", result.Code, result.Msg)
+	}
 
 	// 更新本地状态
 	now := time.Now()

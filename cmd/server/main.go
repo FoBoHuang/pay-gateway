@@ -83,9 +83,6 @@ func main() {
 	// 初始化支付服务
 	paymentService := services.NewPaymentService(db.GetDB(), cfg, logger, googleService, alipayService, appleService)
 
-	// 初始化订阅服务
-	subscriptionService := services.NewSubscriptionService(db.GetDB(), cfg, logger, googleService, paymentService)
-
 	// 设置Gin模式
 	gin.SetMode(cfg.Server.Mode)
 
@@ -96,7 +93,7 @@ func main() {
 	routes.SetupMiddleware(router, logger)
 
 	// 设置路由
-	routes.SetupRoutes(router, paymentService, subscriptionService, googleService, alipayService, appleService, wechatService, db.GetDB(), logger)
+	routes.SetupRoutes(router, paymentService, googleService, alipayService, appleService, wechatService, db.GetDB(), logger)
 
 	// 创建HTTP服务器
 	srv := &http.Server{

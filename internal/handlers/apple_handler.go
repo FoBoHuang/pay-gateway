@@ -12,24 +12,22 @@ import (
 
 // AppleHandler Apple支付处理器
 type AppleHandler struct {
-	appleService        *services.AppleService
-	paymentService      services.PaymentService
-	subscriptionService services.SubscriptionService
-	logger              *zap.Logger
+	appleService   *services.AppleService
+	paymentService services.PaymentService
+	logger         *zap.Logger
 }
 
 // NewAppleHandler 创建Apple支付处理器
 func NewAppleHandler(
 	appleService *services.AppleService,
 	paymentService services.PaymentService,
-	subscriptionService services.SubscriptionService,
+	_ interface{}, // 保留参数位置以保持向后兼容
 	logger *zap.Logger,
 ) *AppleHandler {
 	return &AppleHandler{
-		appleService:        appleService,
-		paymentService:      paymentService,
-		subscriptionService: subscriptionService,
-		logger:              logger,
+		appleService:   appleService,
+		paymentService: paymentService,
+		logger:         logger,
 	}
 }
 

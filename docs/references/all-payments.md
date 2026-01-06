@@ -32,16 +32,17 @@ pay-gateway/
 │   │   ├── alipay_service.go                  # 支付宝服务 (800行)
 │   │   ├── google_play_service.go             # Google Play服务 (392行)
 │   │   ├── apple_service.go                   # Apple服务 (442行)
-│   │   ├── payment_service.go                 # 统一支付服务
-│   │   ├── subscription_service.go            # 订阅服务
-│   │   └── payment_provider.go                # 支付提供商抽象层 (850行)
+│   │   └── payment_service.go                 # 统一支付服务
 │   ├── handlers/
-│   │   ├── wechat_handler.go                  # 微信HTTP处理器 (430行)
-│   │   ├── alipay_handler.go                  # 支付宝HTTP处理器 (500行)
-│   │   ├── apple_handler.go                   # Apple HTTP处理器 (304行)
-│   │   ├── handlers.go                        # 通用处理器
-│   │   ├── webhook.go                         # Google & 支付宝Webhook
-│   │   └── apple_webhook.go                   # Apple Webhook
+│   │   ├── common.go                          # 通用处理器
+│   │   ├── alipay_handler.go                  # 支付宝HTTP处理器
+│   │   ├── alipay_webhook.go                  # 支付宝Webhook
+│   │   ├── apple_handler.go                   # Apple HTTP处理器
+│   │   ├── apple_webhook.go                   # Apple Webhook
+│   │   ├── google_handler.go                  # Google Play HTTP处理器
+│   │   ├── google_webhook.go                  # Google Play Webhook
+│   │   ├── wechat_handler.go                  # 微信HTTP处理器
+│   │   └── wechat_webhook.go                  # 微信支付Webhook
 │   └── routes/routes.go                       # 路由配置
 ├── configs/config.toml.example                # 配置示例
 └── docs/                                      # 文档目录
@@ -230,23 +231,23 @@ POST   /webhook/apple                            # Webhook通知
 └─────────────────────────────────────┘
 ```
 
-### 适配器模式
+### 服务层架构
 
-统一支付接口通过适配器模式整合所有支付方式：
+各支付方式通过独立的服务类实现：
 
 ```
-PaymentProvider (接口)
-    ├── WechatPaymentAdapter
-    ├── AlipayPaymentAdapter
-    ├── ApplePaymentAdapter
-    └── GooglePlayPaymentAdapter
+services/
+├── payment_service.go     # 通用支付服务
+├── alipay_service.go      # 支付宝服务
+├── apple_service.go       # Apple服务
+├── google_service.go      # Google Play服务
+└── wechat_service.go      # 微信支付服务
 ```
 
 **优势**：
-- 统一的接口规范
-- 易于扩展新支付方式
-- 屏蔽不同支付方式的差异
-- 便于测试和维护
+- 每种支付方式独立管理
+- 代码职责清晰
+- 易于维护和扩展
 
 ---
 

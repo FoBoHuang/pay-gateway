@@ -232,64 +232,39 @@ curl -X POST http://localhost:8080/api/v1/payments/process \
 
 ---
 
-## 统一支付接口设计
+## 服务层架构
 
-为了更好地整合不同的支付方式，我们设计了统一的支付服务抽象层。
+每种支付方式通过独立的服务类实现，代码职责清晰。
 
-### 核心接口
+### 服务层结构
 
-```go
-type PaymentProvider interface {
-    // 获取支付提供商名称
-    GetProviderName() string
-    
-    // 创建订单
-    CreateOrder(ctx context.Context, req *UnifiedOrderRequest) (*UnifiedOrderResponse, error)
-    
-    // 创建支付
-    CreatePayment(ctx context.Context, orderNo string, paymentReq interface{}) (interface{}, error)
-    
-    // 查询订单状态
-    QueryOrder(ctx context.Context, orderNo string) (*UnifiedOrderQueryResponse, error)
-    
-    // 退款
-    Refund(ctx context.Context, req *UnifiedRefundRequest) (*UnifiedRefundResponse, error)
-    
-    // 关闭订单
-    CloseOrder(ctx context.Context, orderNo string) error
-    
-    // 处理支付通知
-    HandleNotify(ctx context.Context, notifyData interface{}) error
-    
-    // 验证支付（用于客户端验证）
-    VerifyPayment(ctx context.Context, verifyReq interface{}) (interface{}, error)
-}
+```
+internal/services/
+├── payment_service.go     # 通用支付服务
+├── alipay_service.go      # 支付宝服务
+├── apple_service.go       # Apple服务
+├── google_service.go      # Google Play服务
+└── wechat_service.go      # 微信支付服务
 ```
 
-### 适配器模式
-
-每个支付方式都通过适配器模式实现统一接口：
-
-- `WechatPaymentAdapter` - 微信支付适配器
-- `AlipayPaymentAdapter` - 支付宝适配器
-- `ApplePaymentAdapter` - Apple支付适配器
-- `GooglePlayPaymentAdapter` - Google Play适配器
-
-### 支付提供商注册表
-
-使用注册表模式管理所有支付提供商：
+### 服务初始化
 
 ```go
-registry := NewPaymentProviderRegistry()
+// Google Play服务
+googleService, err := services.NewGooglePlayService(cfg, logger)
 
-// 注册支付提供商
-registry.Register(models.PaymentProviderWeChat, NewWechatPaymentAdapter(wechatService))
-registry.Register(models.PaymentProviderAlipay, NewAlipayPaymentAdapter(alipayService))
-registry.Register(models.PaymentProviderAppleStore, NewApplePaymentAdapter(appleService))
-registry.Register(models.PaymentProviderGooglePlay, NewGooglePlayPaymentAdapter(googleService))
+// 支付宝服务
+alipayService, err := services.NewAlipayService(db.GetDB(), &cfg.Alipay)
 
-// 获取支付提供商
-provider, err := registry.GetProvider(models.PaymentProviderWeChat)
+// Apple服务
+appleService, err := services.NewAppleService(cfg, logger, db.GetDB())
+
+// 微信支付服务
+wechatService, err := services.NewWechatService(db.GetDB(), &cfg.Wechat, logger)
+
+// 通用支付服务
+paymentService := services.NewPaymentService(db.GetDB(), cfg, logger, 
+    googleService, alipayService, appleService, wechatService)
 ```
 
 ---

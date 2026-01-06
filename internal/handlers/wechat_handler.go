@@ -284,50 +284,6 @@ func (h *WechatHandler) CloseOrder(c *gin.Context) {
 	})
 }
 
-// HandleNotify 处理微信支付异步通知
-// @Summary 处理微信支付异步通知
-// @Description 接收微信支付异步通知，更新订单状态
-// @Tags 微信支付
-// @Accept json
-// @Produce json
-// @Success 200 {object} map[string]string
-// @Failure 400 {object} map[string]string
-// @Router /webhook/wechat/notify [post]
-func (h *WechatHandler) HandleNotify(c *gin.Context) {
-	// 读取请求体
-	var notifyData map[string]interface{}
-	if err := c.ShouldBindJSON(&notifyData); err != nil {
-		h.logger.Error("解析通知数据失败", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    "FAIL",
-			"message": "解析数据失败",
-		})
-		return
-	}
-
-	// 验证签名（实际应用中需要验证微信签名）
-	// TODO: 实现签名验证逻辑
-
-	// 处理通知
-	err := h.wechatService.HandleNotify(c.Request.Context(), notifyData)
-	if err != nil {
-		h.logger.Error("处理微信通知失败", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    "FAIL",
-			"message": "处理失败",
-		})
-		return
-	}
-
-	h.logger.Info("微信支付通知处理成功")
-
-	// 返回成功响应给微信
-	c.JSON(http.StatusOK, gin.H{
-		"code":    "SUCCESS",
-		"message": "成功",
-	})
-}
-
 // 请求结构体定义
 
 type JSAPIPaymentRequest struct {

@@ -117,38 +117,19 @@ POST   /webhook/google-play
 ### ✅ 5. 统一支付接口抽象层
 
 **实现文件**:
-- `internal/services/payment_provider.go` - 统一支付接口定义和适配器
+**服务层架构**:
 
-**核心组件**:
+每种支付方式通过独立的服务类实现：
 
-1. **PaymentProvider接口** - 定义所有支付方式的统一接口
-   ```go
-   type PaymentProvider interface {
-       GetProviderName() string
-       CreateOrder(ctx, req) (*UnifiedOrderResponse, error)
-       CreatePayment(ctx, orderNo, paymentReq) (interface{}, error)
-       QueryOrder(ctx, orderNo) (*UnifiedOrderQueryResponse, error)
-       Refund(ctx, req) (*UnifiedRefundResponse, error)
-       CloseOrder(ctx, orderNo) error
-       HandleNotify(ctx, notifyData) error
-       VerifyPayment(ctx, verifyReq) (interface{}, error)
-   }
-   ```
-
-2. **适配器实现**:
-   - `WechatPaymentAdapter` - 微信支付适配器
-   - `AlipayPaymentAdapter` - 支付宝适配器
-   - `ApplePaymentAdapter` - Apple支付适配器
-   - `GooglePlayPaymentAdapter` - Google Play适配器
-
-3. **PaymentProviderRegistry** - 支付提供商注册表
-   - 统一管理所有支付提供商
-   - 支持动态注册和查询
+- `internal/services/payment_service.go` - 通用支付服务
+- `internal/services/alipay_service.go` - 支付宝服务
+- `internal/services/apple_service.go` - Apple服务
+- `internal/services/google_service.go` - Google Play服务
+- `internal/services/wechat_service.go` - 微信支付服务
 
 **设计优势**:
-- 统一的接口规范，便于扩展新的支付方式
-- 适配器模式，屏蔽不同支付方式的差异
-- 注册表模式，便于管理和切换支付方式
+- 每种支付方式独立管理，代码职责清晰
+- 易于维护和扩展
 - 统一的数据结构，便于业务逻辑处理
 
 ---

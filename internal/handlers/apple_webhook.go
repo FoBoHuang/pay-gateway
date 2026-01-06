@@ -16,11 +16,10 @@ import (
 
 // AppleWebhookHandler Apple Webhook处理器
 type AppleWebhookHandler struct {
-	db                  *gorm.DB
-	appleService        *services.AppleService
-	paymentService      services.PaymentService
-	subscriptionService services.SubscriptionService
-	logger              *zap.Logger
+	db             *gorm.DB
+	appleService   *services.AppleService
+	paymentService services.PaymentService
+	logger         *zap.Logger
 }
 
 // NewAppleWebhookHandler 创建Apple Webhook处理器
@@ -28,15 +27,14 @@ func NewAppleWebhookHandler(
 	db *gorm.DB,
 	appleService *services.AppleService,
 	paymentService services.PaymentService,
-	subscriptionService services.SubscriptionService,
+	_ interface{}, // 保留参数位置以保持向后兼容
 	logger *zap.Logger,
 ) *AppleWebhookHandler {
 	return &AppleWebhookHandler{
-		db:                  db,
-		appleService:        appleService,
-		paymentService:      paymentService,
-		subscriptionService: subscriptionService,
-		logger:              logger,
+		db:             db,
+		appleService:   appleService,
+		paymentService: paymentService,
+		logger:         logger,
 	}
 }
 

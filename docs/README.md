@@ -142,9 +142,10 @@ docs/
 
 1. 阅读 [支付集成文档](references/integration.md)
 2. 参考现有支付方式的实现
-3. 实现统一的 `PaymentProvider` 接口
-4. 添加路由和处理器
-5. 更新文档
+3. 创建对应的 `xxx_service.go` 服务文件
+4. 创建 `xxx_handler.go` 和 `xxx_webhook.go` 处理器
+5. 添加路由配置
+6. 更新文档
 
 ### 任务2：调试支付问题
 
