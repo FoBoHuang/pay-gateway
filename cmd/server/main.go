@@ -93,7 +93,7 @@ func main() {
 	routes.SetupMiddleware(router, logger)
 
 	// 设置路由
-	routes.SetupRoutes(router, paymentService, googleService, alipayService, appleService, wechatService, db.GetDB(), logger)
+	routes.SetupRoutes(router, paymentService, googleService, alipayService, appleService, wechatService, db.GetDB(), cfg, logger)
 
 	// 创建HTTP服务器
 	srv := &http.Server{

@@ -106,6 +106,11 @@ func NewGooglePlayService(cfg *config.Config, logger *zap.Logger) (*GooglePlaySe
 	}, nil
 }
 
+// PackageName 返回配置的 Android 应用包名，用于 Webhook 包名校验
+func (s *GooglePlayService) PackageName() string {
+	return s.packageName
+}
+
 // VerifyPurchase 验证单次购买
 // 向Google Play服务器验证购买令牌的有效性
 // 参数：

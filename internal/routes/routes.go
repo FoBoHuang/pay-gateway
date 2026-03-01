@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"pay-gateway/internal/config"
 	"pay-gateway/internal/handlers"
 	"pay-gateway/internal/middleware"
 	"pay-gateway/internal/services"
@@ -21,6 +22,7 @@ func SetupRoutes(
 	appleService *services.AppleService,
 	wechatService *services.WechatService,
 	db *gorm.DB,
+	cfg *config.Config,
 	logger *zap.Logger,
 ) {
 	// ==================== 创建处理器 ====================
@@ -30,7 +32,7 @@ func SetupRoutes(
 
 	// Google Play处理器
 	googleHandler := handlers.NewGoogleHandler(googleService, paymentService, logger)
-	googleWebhookHandler := handlers.NewGoogleWebhookHandler(db, googleService, paymentService, logger)
+	googleWebhookHandler := handlers.NewGoogleWebhookHandler(db, googleService, paymentService, &cfg.Google, logger)
 
 	// 支付宝处理器
 	alipayHandler := handlers.NewAlipayHandler(alipayService, paymentService, logger)

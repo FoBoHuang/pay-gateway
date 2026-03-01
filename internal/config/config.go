@@ -60,6 +60,8 @@ type GoogleConfig struct {
 	ServiceAccountFile string // Google服务账号JSON文件路径
 	PackageName        string // Android应用包名，如com.example.app
 	WebhookSecret      string // Webhook密钥，用于验证Google Play通知
+	WebhookURL         string // Webhook 完整 URL，用于 Pub/Sub JWT 验证的 audience
+	VerifyPushJWT      bool   // 是否验证 Pub/Sub 推送的 JWT 签名（需在 Pub/Sub 订阅中启用认证）
 }
 
 // JWTConfig JWT认证配置
@@ -179,6 +181,8 @@ func loadDefaults() *Config {
 			ServiceAccountFile: "service-account.json",
 			PackageName:        "com.example.app",
 			WebhookSecret:      "",
+			WebhookURL:         "",
+			VerifyPushJWT:      false,
 		},
 		JWT: JWTConfig{
 			Secret:     "your-secret-key",
@@ -288,6 +292,12 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if webhookSecret := os.Getenv("GOOGLE_WEBHOOK_SECRET"); webhookSecret != "" {
 		c.Google.WebhookSecret = webhookSecret
+	}
+	if webhookURL := os.Getenv("GOOGLE_WEBHOOK_URL"); webhookURL != "" {
+		c.Google.WebhookURL = webhookURL
+	}
+	if verifyPushJWT := os.Getenv("GOOGLE_VERIFY_PUSH_JWT"); verifyPushJWT != "" {
+		c.Google.VerifyPushJWT = verifyPushJWT == "true" || verifyPushJWT == "1"
 	}
 
 	// JWT配置覆盖

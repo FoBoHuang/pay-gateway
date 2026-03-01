@@ -4,14 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"google.golang.org/api/idtoken"
 	"gorm.io/gorm"
 
+	"pay-gateway/internal/config"
 	"pay-gateway/internal/models"
 	"pay-gateway/internal/services"
 )
@@ -21,6 +25,7 @@ type GoogleWebhookHandler struct {
 	db             *gorm.DB
 	googleService  *services.GooglePlayService
 	paymentService services.PaymentService
+	config         *config.GoogleConfig
 	logger         *zap.Logger
 }
 
@@ -29,12 +34,14 @@ func NewGoogleWebhookHandler(
 	db *gorm.DB,
 	googleService *services.GooglePlayService,
 	paymentService services.PaymentService,
+	cfg *config.GoogleConfig,
 	logger *zap.Logger,
 ) *GoogleWebhookHandler {
 	return &GoogleWebhookHandler{
 		db:             db,
 		googleService:  googleService,
 		paymentService: paymentService,
+		config:         cfg,
 		logger:         logger,
 	}
 }
@@ -82,6 +89,29 @@ type GoogleTestNotification struct {
 	Version string `json:"version"`
 }
 
+// verifyPubSubJWT 验证 Pub/Sub 推送请求的 JWT 签名
+// 当在 Google Cloud 中为推送订阅启用认证时，Pub/Sub 会在 Authorization 头中携带 JWT
+func (h *GoogleWebhookHandler) verifyPubSubJWT(c *gin.Context) error {
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		return errors.New("缺少 Authorization 头")
+	}
+	const prefix = "Bearer "
+	if !strings.HasPrefix(authHeader, prefix) {
+		return errors.New("Authorization 格式无效")
+	}
+	tokenString := strings.TrimPrefix(authHeader, prefix)
+	if tokenString == "" {
+		return errors.New("JWT 为空")
+	}
+
+	_, err := idtoken.Validate(context.Background(), tokenString, h.config.WebhookURL)
+	if err != nil {
+		return fmt.Errorf("JWT 验证失败: %w", err)
+	}
+	return nil
+}
+
 // ==================== Webhook处理 ====================
 
 // HandleGooglePlayWebhook 处理Google Play Webhook
@@ -96,6 +126,15 @@ type GoogleTestNotification struct {
 // @Failure 500 {object} ErrorResponse
 // @Router /webhook/google [post]
 func (h *GoogleWebhookHandler) HandleGooglePlayWebhook(c *gin.Context) {
+	// 1. Pub/Sub JWT 验证（可选，需配置 GOOGLE_VERIFY_PUSH_JWT=true 和 GOOGLE_WEBHOOK_URL）
+	if h.config != nil && h.config.VerifyPushJWT && h.config.WebhookURL != "" {
+		if err := h.verifyPubSubJWT(c); err != nil {
+			h.logger.Warn("Google Webhook JWT 验证失败", zap.Error(err))
+			ErrorJSON(c, 401, "JWT 验证失败", err)
+			return
+		}
+	}
+
 	// 读取请求体
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -125,6 +164,14 @@ func (h *GoogleWebhookHandler) HandleGooglePlayWebhook(c *gin.Context) {
 	if err := json.Unmarshal(decodedData, &webhookData); err != nil {
 		h.logger.Error("解析Google Webhook数据失败", zap.Error(err))
 		ErrorJSON(c, 400, "解析数据失败", err)
+		return
+	}
+
+	// 2. 包名校验：确保通知来自本应用
+	expectedPkg := h.googleService.PackageName()
+	if expectedPkg != "" && webhookData.PackageName != "" && webhookData.PackageName != expectedPkg {
+		h.logger.Warn("Google Webhook 包名不匹配", zap.String("expected", expectedPkg), zap.String("received", webhookData.PackageName))
+		ErrorJSON(c, 403, "包名不匹配", nil)
 		return
 	}
 
@@ -290,8 +337,32 @@ func (h *GoogleWebhookHandler) processSubscriptionEvent(ctx context.Context, eve
 // ==================== 一次性产品事件处理 ====================
 
 func (h *GoogleWebhookHandler) handleOneTimeProductPurchased(ctx context.Context, event *models.WebhookEvent, notification *models.OneTimeProductNotification) {
+	// 二次验证：调用 Google API 确认购买状态
+	purchase, err := h.googleService.VerifyPurchase(ctx, notification.SKU, notification.PurchaseToken)
+	if err != nil {
+		h.logger.Error("二次验证购买失败", zap.Error(err), zap.String("sku", notification.SKU))
+		event.MarkAsFailed("验证购买失败")
+		return
+	}
+	// PurchaseState: 0=已购买, 1=已取消, 2=待处理
+	if purchase.PurchaseState != 0 {
+		h.logger.Warn("购买状态与通知不符", zap.Int("purchase_state", purchase.PurchaseState), zap.String("sku", notification.SKU))
+		event.MarkAsFailed("购买状态异常")
+		return
+	}
+
+	// Webhook 兜底：若 Verify 流程中 Acknowledge 失败，此处再次尝试，满足 3 天合规
+	if purchase.AcknowledgementState == 0 {
+		if ackErr := h.googleService.AcknowledgePurchase(ctx, notification.SKU, notification.PurchaseToken, ""); ackErr != nil {
+			h.logger.Error("Webhook 兜底 Acknowledge 失败", zap.Error(ackErr), zap.String("sku", notification.SKU))
+			// 不阻断流程，订单状态仍更新；可依赖定时扫描进一步兜底
+		} else {
+			h.logger.Info("Webhook 兜底 Acknowledge 成功", zap.String("sku", notification.SKU))
+		}
+	}
+
 	var order models.Order
-	err := h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
+	err = h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
 		Joins("JOIN google_payments ON orders.id = google_payments.order_id").
 		First(&order).Error
 
@@ -324,8 +395,21 @@ func (h *GoogleWebhookHandler) handleOneTimeProductPurchased(ctx context.Context
 }
 
 func (h *GoogleWebhookHandler) handleOneTimeProductCanceled(ctx context.Context, event *models.WebhookEvent, notification *models.OneTimeProductNotification) {
+	// 二次验证：调用 Google API 确认购买已取消
+	purchase, err := h.googleService.VerifyPurchase(ctx, notification.SKU, notification.PurchaseToken)
+	if err != nil {
+		h.logger.Error("二次验证购买取消失败", zap.Error(err), zap.String("sku", notification.SKU))
+		event.MarkAsFailed("验证购买失败")
+		return
+	}
+	if purchase.PurchaseState != 1 { // 1=已取消
+		h.logger.Warn("购买状态与取消通知不符", zap.Int("purchase_state", purchase.PurchaseState), zap.String("sku", notification.SKU))
+		event.MarkAsFailed("购买状态异常")
+		return
+	}
+
 	var order models.Order
-	err := h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
+	err = h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
 		Joins("JOIN google_payments ON orders.id = google_payments.order_id").
 		First(&order).Error
 
@@ -360,8 +444,32 @@ func (h *GoogleWebhookHandler) handleOneTimeProductCanceled(ctx context.Context,
 // ==================== 订阅事件处理 ====================
 
 func (h *GoogleWebhookHandler) handleSubscriptionPurchased(ctx context.Context, event *models.WebhookEvent, notification *models.SubscriptionNotification) {
+	// 二次验证：调用 Google API 确认订阅状态
+	subscription, err := h.googleService.VerifySubscription(ctx, notification.SubscriptionID, notification.PurchaseToken)
+	if err != nil {
+		h.logger.Error("二次验证订阅购买失败", zap.Error(err), zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("验证订阅失败")
+		return
+	}
+	// 订阅应处于有效状态（未过期）
+	if services.GetSubscriptionStatus(subscription, time.Now()) == models.SubscriptionStateExpired {
+		h.logger.Warn("订阅已过期，与购买通知不符", zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("订阅状态异常")
+		return
+	}
+
+	// Webhook 兜底：若 Verify 流程中 Acknowledge 失败，此处再次尝试，满足 3 天合规
+	if subscription.AcknowledgementState == 0 {
+		if ackErr := h.googleService.AcknowledgeSubscription(ctx, notification.SubscriptionID, notification.PurchaseToken, ""); ackErr != nil {
+			h.logger.Error("Webhook 兜底 Acknowledge 订阅失败", zap.Error(ackErr), zap.String("subscription_id", notification.SubscriptionID))
+			// 不阻断流程
+		} else {
+			h.logger.Info("Webhook 兜底 Acknowledge 订阅成功", zap.String("subscription_id", notification.SubscriptionID))
+		}
+	}
+
 	var order models.Order
-	err := h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
+	err = h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
 		Joins("JOIN google_payments ON orders.id = google_payments.order_id").
 		First(&order).Error
 
@@ -430,8 +538,21 @@ func (h *GoogleWebhookHandler) handleSubscriptionRenewed(ctx context.Context, ev
 }
 
 func (h *GoogleWebhookHandler) handleSubscriptionCanceled(ctx context.Context, event *models.WebhookEvent, notification *models.SubscriptionNotification) {
+	// 二次验证：调用 Google API 确认订阅已取消
+	subscription, err := h.googleService.VerifySubscription(ctx, notification.SubscriptionID, notification.PurchaseToken)
+	if err != nil {
+		h.logger.Error("二次验证订阅取消失败", zap.Error(err), zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("验证订阅失败")
+		return
+	}
+	if subscription.CancelReason == 0 && subscription.AutoRenewing {
+		h.logger.Warn("订阅仍处于续费状态，与取消通知不符", zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("订阅状态异常")
+		return
+	}
+
 	var order models.Order
-	err := h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
+	err = h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
 		Joins("JOIN google_payments ON orders.id = google_payments.order_id").
 		First(&order).Error
 
@@ -463,9 +584,22 @@ func (h *GoogleWebhookHandler) handleSubscriptionCanceled(ctx context.Context, e
 		zap.String("subscription_id", notification.SubscriptionID))
 }
 
-func (h *GoogleWebhookHandler) handleSubscriptionExpired(_ context.Context, event *models.WebhookEvent, notification *models.SubscriptionNotification) {
+func (h *GoogleWebhookHandler) handleSubscriptionExpired(ctx context.Context, event *models.WebhookEvent, notification *models.SubscriptionNotification) {
+	// 二次验证：调用 Google API 确认订阅已过期
+	subscription, err := h.googleService.VerifySubscription(ctx, notification.SubscriptionID, notification.PurchaseToken)
+	if err != nil {
+		h.logger.Error("二次验证订阅过期失败", zap.Error(err), zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("验证订阅失败")
+		return
+	}
+	if services.GetSubscriptionStatus(subscription, time.Now()) != models.SubscriptionStateExpired {
+		h.logger.Warn("订阅未过期，与过期通知不符", zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("订阅状态异常")
+		return
+	}
+
 	var order models.Order
-	err := h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
+	err = h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
 		Joins("JOIN google_payments ON orders.id = google_payments.order_id").
 		First(&order).Error
 
@@ -491,9 +625,24 @@ func (h *GoogleWebhookHandler) handleSubscriptionExpired(_ context.Context, even
 		zap.String("subscription_id", notification.SubscriptionID))
 }
 
-func (h *GoogleWebhookHandler) handleSubscriptionInGracePeriod(_ context.Context, event *models.WebhookEvent, notification *models.SubscriptionNotification) {
+func (h *GoogleWebhookHandler) handleSubscriptionInGracePeriod(ctx context.Context, event *models.WebhookEvent, notification *models.SubscriptionNotification) {
+	// 二次验证：调用 Google API 确认订阅处于宽限期
+	subscription, err := h.googleService.VerifySubscription(ctx, notification.SubscriptionID, notification.PurchaseToken)
+	if err != nil {
+		h.logger.Error("二次验证订阅宽限期失败", zap.Error(err), zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("验证订阅失败")
+		return
+	}
+	// 宽限期时订阅可能为 Pending(支付待处理) 或 Active，验证订阅存在且有效即可
+	status := services.GetSubscriptionStatus(subscription, time.Now())
+	if status == models.SubscriptionStateExpired {
+		h.logger.Warn("订阅已过期，与宽限期通知不符", zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("订阅状态异常")
+		return
+	}
+
 	var order models.Order
-	err := h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
+	err = h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
 		Joins("JOIN google_payments ON orders.id = google_payments.order_id").
 		First(&order).Error
 
@@ -519,9 +668,24 @@ func (h *GoogleWebhookHandler) handleSubscriptionInGracePeriod(_ context.Context
 		zap.String("subscription_id", notification.SubscriptionID))
 }
 
-func (h *GoogleWebhookHandler) handleSubscriptionRevoked(_ context.Context, event *models.WebhookEvent, notification *models.SubscriptionNotification) {
+func (h *GoogleWebhookHandler) handleSubscriptionRevoked(ctx context.Context, event *models.WebhookEvent, notification *models.SubscriptionNotification) {
+	// 二次验证：调用 Google API 确认订阅已撤销
+	subscription, err := h.googleService.VerifySubscription(ctx, notification.SubscriptionID, notification.PurchaseToken)
+	if err != nil {
+		h.logger.Error("二次验证订阅撤销失败", zap.Error(err), zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("验证订阅失败")
+		return
+	}
+	// 撤销后订阅应已过期或处于无效状态
+	status := services.GetSubscriptionStatus(subscription, time.Now())
+	if status == models.SubscriptionStateActive {
+		h.logger.Warn("订阅仍活跃，与撤销通知不符", zap.String("subscription_id", notification.SubscriptionID))
+		event.MarkAsFailed("订阅状态异常")
+		return
+	}
+
 	var order models.Order
-	err := h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
+	err = h.db.Where("google_payments.purchase_token = ?", notification.PurchaseToken).
 		Joins("JOIN google_payments ON orders.id = google_payments.order_id").
 		First(&order).Error
 

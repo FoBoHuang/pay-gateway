@@ -119,6 +119,20 @@ func (h *GoogleHandler) VerifyPurchase(c *gin.Context) {
 		return
 	}
 
+	// 验证成功后立即确认，满足 3 天 Acknowledge 合规要求
+	if purchase.AcknowledgementState == 0 {
+		if ackErr := h.googleService.AcknowledgePurchase(c.Request.Context(), req.ProductID, req.PurchaseToken, ""); ackErr != nil {
+			h.logger.Error("验证后自动确认购买失败，需客户端重试 Acknowledge",
+				zap.Error(ackErr),
+				zap.String("product_id", req.ProductID),
+				zap.String("purchase_token", req.PurchaseToken))
+			// 不阻断流程，验证结果仍返回；客户端可单独调用 acknowledge-purchase 重试
+		} else {
+			purchase.AcknowledgementState = 1
+			h.logger.Info("验证后已自动确认购买", zap.String("product_id", req.ProductID))
+		}
+	}
+
 	h.logger.Info("Google购买验证成功",
 		zap.String("product_id", req.ProductID),
 		zap.String("order_id", purchase.OrderId))
@@ -150,6 +164,20 @@ func (h *GoogleHandler) VerifySubscription(c *gin.Context) {
 		h.logger.Error("验证Google订阅失败", zap.Error(err))
 		ErrorJSON(c, 500, "验证订阅失败", err)
 		return
+	}
+
+	// 验证成功后立即确认，满足 3 天 Acknowledge 合规要求
+	if subscription.AcknowledgementState == 0 {
+		if ackErr := h.googleService.AcknowledgeSubscription(c.Request.Context(), req.SubscriptionID, req.PurchaseToken, ""); ackErr != nil {
+			h.logger.Error("验证后自动确认订阅失败，需客户端重试 Acknowledge",
+				zap.Error(ackErr),
+				zap.String("subscription_id", req.SubscriptionID),
+				zap.String("purchase_token", req.PurchaseToken))
+			// 不阻断流程，验证结果仍返回；客户端可单独调用 acknowledge-subscription 重试
+		} else {
+			subscription.AcknowledgementState = 1
+			h.logger.Info("验证后已自动确认订阅", zap.String("subscription_id", req.SubscriptionID))
+		}
 	}
 
 	h.logger.Info("Google订阅验证成功",

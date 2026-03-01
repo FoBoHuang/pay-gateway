@@ -378,6 +378,23 @@ GET /api/v1/google/users/1/subscriptions
       └                          └                             └
 ```
 
+## 安全机制
+
+### Webhook 安全验证
+
+| 机制 | 说明 | 配置 |
+|------|------|------|
+| **包名校验** | 校验通知中的 `packageName` 与配置一致，防止跨应用伪造 | `GOOGLE_PACKAGE_NAME` |
+| **二次验证** | 所有关键事件（购买/取消/续订/过期等）处理前调用 Google API 确认状态 | 自动 |
+| **Pub/Sub JWT** | 验证推送请求的 JWT 签名（需在 GCP 订阅中启用认证） | `GOOGLE_VERIFY_PUSH_JWT=true`、`GOOGLE_WEBHOOK_URL` |
+
+### 启用 Pub/Sub JWT 验证
+
+1. 在 Google Cloud Console 创建推送订阅时勾选「启用身份验证」
+2. 配置环境变量：
+   - `GOOGLE_WEBHOOK_URL`：Webhook 完整 URL（如 `https://your-domain.com/webhook/google`）
+   - `GOOGLE_VERIFY_PUSH_JWT=true`
+
 ## 最佳实践
 
 ### 1. 幂等性处理
@@ -404,25 +421,19 @@ func HandleWebhook(notification *WebhookNotification) error {
 }
 ```
 
-### 2. 及时确认购买
+### 2. 及时确认购买（3 天 Acknowledge 合规）
 
-购买后必须在 3 天内调用 Acknowledge，否则 Google 会自动退款：
+购买后必须在 3 天内调用 Acknowledge，否则 Google 会自动退款。
 
-```go
-// 验证成功后立即确认
-purchase, err := googleService.VerifyPurchase(ctx, productID, token)
-if err != nil {
-    return err
-}
+**多层保障机制**：
 
-if purchase.AcknowledgementState == 0 {
-    err = googleService.AcknowledgePurchase(ctx, productID, token, payload)
-    if err != nil {
-        log.Error("Acknowledge failed", err)
-        // 考虑加入重试队列
-    }
-}
-```
+| 层级 | 触发时机 | 说明 |
+|------|----------|------|
+| **主流程** | Verify 成功后 | `VerifyPurchase`/`VerifySubscription` 在验证成功且 `acknowledgementState == 0` 时自动调用 Acknowledge |
+| **Webhook 兜底** | 收到 `ONE_TIME_PRODUCT_PURCHASED` / `SUBSCRIPTION_PURCHASED` | 二次验证后若仍未确认，再次尝试 Acknowledge，覆盖 Verify 流程中 Acknowledge 失败的情况 |
+| **客户端重试** | 手动 | 可单独调用 `acknowledge-purchase` / `acknowledge-subscription` 接口 |
+
+若主流程 Acknowledge 失败，仅记录日志不阻断；Webhook 收到购买通知时会再次尝试，形成兜底。
 
 ### 3. 订阅状态判断
 
