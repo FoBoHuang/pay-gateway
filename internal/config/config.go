@@ -73,15 +73,18 @@ type JWTConfig struct {
 
 // AlipayConfig 支付宝配置
 type AlipayConfig struct {
-	AppID          string // 支付宝应用ID
-	PrivateKey     string // 应用私钥
-	IsProduction   bool   // 是否为生产环境
-	NotifyURL      string // 异步通知URL
-	ReturnURL      string // 同步返回URL
-	CertMode       bool   // 是否使用证书模式
-	AppCertPath    string // 应用公钥证书路径
-	RootCertPath   string // 支付宝根证书路径
-	AlipayCertPath string // 支付宝公钥证书路径
+	AppID                    string // 支付宝应用ID
+	PrivateKey               string // 应用私钥
+	IsProduction             bool   // 是否为生产环境
+	NotifyURL                string // 支付异步通知URL
+	WithholdNotifyURL        string `toml:"withhold_notify_url"` // 免密签约异步通知URL（可选，为空时从 NotifyURL 派生）
+	ReturnURL                string // 同步返回URL
+	CertMode                 bool   // 是否使用证书模式
+	AppCertPath              string // 应用公钥证书路径
+	RootCertPath             string // 支付宝根证书路径
+	AlipayCertPath           string // 支付宝公钥证书路径
+	ReconciliationCronEnable bool   `toml:"reconciliation_cron_enable"` // 是否启用每日对账定时任务
+	ReconciliationCronTime   string `toml:"reconciliation_cron_time"`   // 对账执行时间，如 "02:00" 表示凌晨2点
 }
 
 // AppleConfig Apple Store配置
@@ -320,6 +323,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if notifyURL := os.Getenv("ALIPAY_NOTIFY_URL"); notifyURL != "" {
 		c.Alipay.NotifyURL = notifyURL
+	}
+	if withholdNotifyURL := os.Getenv("ALIPAY_WITHHOLD_NOTIFY_URL"); withholdNotifyURL != "" {
+		c.Alipay.WithholdNotifyURL = withholdNotifyURL
 	}
 	if returnURL := os.Getenv("ALIPAY_RETURN_URL"); returnURL != "" {
 		c.Alipay.ReturnURL = returnURL

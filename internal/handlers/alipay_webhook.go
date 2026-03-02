@@ -147,3 +147,40 @@ func (h *AlipayWebhookHandler) HandleAlipayDeductNotify(c *gin.Context) {
 	c.String(http.StatusOK, "success")
 }
 
+// HandleAlipayWithholdNotify 处理支付宝免密签约通知
+// @Summary 处理支付宝免密签约通知
+// @Description 接收并处理支付宝的免密签约/解约通知
+// @Tags 支付宝Webhook
+// @Accept application/x-www-form-urlencoded
+// @Produce text/plain
+// @Success 200 {string} string "success"
+// @Failure 400 {string} string "fail"
+// @Router /webhook/alipay/withhold [post]
+func (h *AlipayWebhookHandler) HandleAlipayWithholdNotify(c *gin.Context) {
+	if err := c.Request.ParseForm(); err != nil {
+		h.logger.Error("解析支付宝免密签约通知表单失败", zap.Error(err))
+		c.String(http.StatusOK, "fail")
+		return
+	}
+
+	notifyData := make(map[string]string)
+	for key, values := range c.Request.Form {
+		if len(values) > 0 {
+			notifyData[key] = values[0]
+		}
+	}
+
+	h.logger.Info("收到支付宝免密签约通知",
+		zap.String("agreement_no", notifyData["agreement_no"]),
+		zap.String("out_request_no", notifyData["out_request_no"]),
+		zap.String("status", notifyData["status"]))
+
+	if err := h.alipayService.HandleWithholdNotify(c.Request.Context(), notifyData); err != nil {
+		h.logger.Error("处理支付宝免密签约通知失败", zap.Error(err))
+		c.String(http.StatusOK, "fail")
+		return
+	}
+
+	c.String(http.StatusOK, "success")
+}
+

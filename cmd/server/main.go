@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,10 +62,18 @@ func main() {
 		logger.Fatal("初始化Google Play服务失败", zap.Error(err))
 	}
 
-	// 初始化支付宝服务
-	alipayService, err := services.NewAlipayService(db.GetDB(), &cfg.Alipay)
+	// 初始化支付宝服务（传入 Redis 用于 Webhook 分布式锁）
+	alipayService, err := services.NewAlipayService(db.GetDB(), &cfg.Alipay, redis)
 	if err != nil {
 		logger.Fatal("初始化支付宝服务失败", zap.Error(err))
+	}
+
+	// 初始化支付宝对账服务（可选，失败时对账接口返回 503）
+	var alipayReconciliationService *services.AlipayReconciliationService
+	if svc, err := services.NewAlipayReconciliationService(db.GetDB(), &cfg.Alipay, logger); err != nil {
+		logger.Warn("初始化支付宝对账服务失败，对账功能将不可用", zap.Error(err))
+	} else {
+		alipayReconciliationService = svc
 	}
 
 	// 初始化Apple服务
@@ -93,7 +103,7 @@ func main() {
 	routes.SetupMiddleware(router, logger)
 
 	// 设置路由
-	routes.SetupRoutes(router, paymentService, googleService, alipayService, appleService, wechatService, db.GetDB(), cfg, logger)
+	routes.SetupRoutes(router, paymentService, googleService, alipayService, alipayReconciliationService, appleService, wechatService, db.GetDB(), cfg, logger)
 
 	// 创建HTTP服务器
 	srv := &http.Server{
@@ -111,6 +121,42 @@ func main() {
 		}
 	}()
 
+	// 启动订单超时取消定时任务（每分钟执行一次）
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if count, err := paymentService.CancelExpiredOrders(context.Background()); err != nil {
+				logger.Error("定时取消过期订单失败", zap.Error(err))
+			} else if count > 0 {
+				logger.Info("定时任务已取消过期订单", zap.Int64("count", count))
+			}
+		}
+	}()
+
+	// 启动支付宝主动查询兜底定时任务（每2分钟执行一次，补漏 Webhook 未成功通知的订单）
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if count, err := alipayService.SyncPendingOrders(context.Background()); err != nil {
+				logger.Error("支付宝主动查询兜底失败", zap.Error(err))
+			} else if count > 0 {
+				logger.Info("支付宝主动查询兜底完成", zap.Int("queried", count))
+			}
+		}
+	}()
+
+	// 启动支付宝每日对账定时任务（可选）
+	if alipayReconciliationService != nil && cfg.Alipay.ReconciliationCronEnable {
+		cronTime := cfg.Alipay.ReconciliationCronTime
+		if cronTime == "" {
+			cronTime = "02:00"
+		}
+		go runReconciliationCron(alipayReconciliationService, cronTime, logger)
+		logger.Info("已启用支付宝每日对账定时任务", zap.String("cron_time", cronTime))
+	}
+
 	// 等待中断信号
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -127,6 +173,38 @@ func main() {
 	}
 
 	logger.Info("服务器已关闭")
+}
+
+// runReconciliationCron 每日对账定时任务，在指定时间执行前一日对账
+func runReconciliationCron(svc *services.AlipayReconciliationService, cronTime string, logger *zap.Logger) {
+	parts := strings.Split(cronTime, ":")
+	hour, min := 2, 0
+	if len(parts) >= 1 && parts[0] != "" {
+		if h, err := strconv.Atoi(parts[0]); err == nil && h >= 0 && h <= 23 {
+			hour = h
+		}
+	}
+	if len(parts) >= 2 && parts[1] != "" {
+		if m, err := strconv.Atoi(parts[1]); err == nil && m >= 0 && m <= 59 {
+			min = m
+		}
+	}
+	for {
+		now := time.Now()
+		next := time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, now.Location())
+		if !next.After(now) {
+			next = next.Add(24 * time.Hour)
+		}
+		sleep := time.Until(next)
+		logger.Info("对账定时任务将于下次执行", zap.Time("next_run", next), zap.Duration("sleep", sleep))
+		time.Sleep(sleep)
+		billDate := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+		if _, err := svc.RunReconciliation(context.Background(), billDate); err != nil {
+			logger.Error("定时对账执行失败", zap.String("bill_date", billDate), zap.Error(err))
+		} else {
+			logger.Info("定时对账执行完成", zap.String("bill_date", billDate))
+		}
+	}
 }
 
 // initLogger 初始化日志

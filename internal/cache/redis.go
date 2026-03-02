@@ -62,6 +62,12 @@ func (r *Redis) Set(ctx context.Context, key string, value interface{}, expirati
 	return r.client.Set(ctx, key, value, expiration).Err()
 }
 
+// SetNX 仅当键不存在时设置（用于分布式锁）
+// 返回 true 表示设置成功（获取锁成功），false 表示键已存在（获取锁失败）
+func (r *Redis) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error) {
+	return r.client.SetNX(ctx, key, value, expiration).Result()
+}
+
 // Get 获取值
 func (r *Redis) Get(ctx context.Context, key string) (string, error) {
 	return r.client.Get(ctx, key).Result()

@@ -217,6 +217,25 @@ func (h *CommonHandler) CancelOrder(c *gin.Context) {
 	h.successResponse(c, gin.H{"message": "订单取消成功"})
 }
 
+// CancelExpiredOrders 取消已过期的待支付订单
+// @Summary 取消过期订单
+// @Description 批量取消已过期的待支付订单，可由定时任务调用
+// @Tags 订单管理
+// @Accept json
+// @Produce json
+// @Success 200 {object} Response{data=gin.H}
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/orders/cancel-expired [post]
+func (h *CommonHandler) CancelExpiredOrders(c *gin.Context) {
+	count, err := h.paymentService.CancelExpiredOrders(c.Request.Context())
+	if err != nil {
+		h.logger.Error("取消过期订单失败", zap.Error(err))
+		h.errorResponse(c, 500, "取消过期订单失败", err)
+		return
+	}
+	h.successResponse(c, gin.H{"message": "已取消过期订单", "count": count})
+}
+
 // GetUserOrders 获取用户订单列表
 // @Summary 获取用户订单列表
 // @Description 获取指定用户的订单列表

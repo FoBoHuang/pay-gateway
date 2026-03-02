@@ -1,10 +1,11 @@
 # 支付宝接入指南
 
-本文档详细介绍如何接入支付宝支付和周期扣款（订阅）功能。
+本文档详细介绍支付宝支付能力，包括普通支付、周期扣款、免密代扣、退款及对账。
 
 ## 📋 目录
 
 - [功能概述](#功能概述)
+- [架构设计](#架构设计)
 - [配置](#配置)
 - [支付流程](#支付流程)
 - [API 接口](#api-接口)
@@ -13,16 +14,26 @@
 
 ## 功能概述
 
-支持的功能：
-
 | 功能 | 说明 | 状态 |
 |-----|------|-----|
 | 手机网站支付 | WAP H5 支付 | ✅ |
 | 电脑网站支付 | PC 网页支付 | ✅ |
 | App 支付 | 原生 App 支付 | ✅ |
 | 周期扣款 | 签约代扣/订阅 | ✅ |
-| 退款 | 原路退回 | ✅ |
-| 异步通知 | 支付结果通知 | ✅ |
+| 免密支付 | 商户代扣，签约后单次扣款无需用户确认 | ✅ |
+| 退款 | 原路退回，支持幂等 | ✅ |
+| 对账 | 下载账单与本地订单比对 | ✅ |
+| 异步通知 | 支付/签约/扣款结果通知 | ✅ |
+
+## 架构设计
+
+为保证**订单一致性**和**防资损**，采用三层保障机制：
+
+| 层级 | 机制 | 说明 |
+|-----|------|-----|
+| 主通道 | Webhook 为主 | 支付宝异步通知，实时性最好 |
+| 兜底一 | 主动查询 | 客户端轮询 + 服务端定时任务（每 2 分钟）向支付宝查询待支付订单并同步状态 |
+| 兜底二 | 对账 | 每日下载官方账单，与本地订单逐笔比对，发现并记录差异 |
 
 ## 配置
 
@@ -31,198 +42,131 @@
 1. 登录 [支付宝开放平台](https://open.alipay.com/)
 2. 创建应用，获取 **AppID**
 3. 配置应用公钥或上传证书
-4. 开通所需产品（手机网站支付、电脑网站支付、周期扣款等）
+4. 开通所需产品（手机网站支付、电脑网站支付、周期扣款、代扣等）
 
-### 2. 配置密钥
-
-支持两种方式：
-
-#### 方式一：公钥模式
+### 2. 配置文件
 
 ```toml
 [alipay]
-# 应用 ID
 app_id = "2021000000000000"
-
-# 应用私钥（PKCS1 或 PKCS8 格式）
-private_key = '''
+private_key = """
 -----BEGIN RSA PRIVATE KEY-----
 MIIEowIBAAKCAQEA...
 -----END RSA PRIVATE KEY-----
-'''
-
-# 支付宝公钥
-alipay_public_key = '''
------BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
------END PUBLIC KEY-----
-'''
-
-# 是否生产环境
+"""
 is_production = false
-
-# 证书模式
-cert_mode = false
-
-# 回调地址
 notify_url = "https://your-domain.com/webhook/alipay/notify"
-return_url = "https://your-domain.com/payment/success"
-```
+withhold_notify_url = "https://your-domain.com/webhook/alipay/withhold"  # 免密签约通知，可选
+return_url = "https://your-domain.com/payment/return"
 
-#### 方式二：证书模式（推荐）
-
-```toml
-[alipay]
-app_id = "2021000000000000"
-private_key = "..."
-is_production = false
-
-# 启用证书模式
+# 证书模式（推荐）
 cert_mode = true
+app_cert_path = "configs/alipay/appCertPublicKey.crt"
+root_cert_path = "configs/alipay/alipayRootCert.crt"
+alipay_cert_path = "configs/alipay/alipayCertPublicKey_RSA2.crt"
 
-# 证书路径
-app_cert_path = "/path/to/appCertPublicKey.crt"
-alipay_cert_path = "/path/to/alipayCertPublicKey_RSA2.crt"
-root_cert_path = "/path/to/alipayRootCert.crt"
-
-notify_url = "https://your-domain.com/webhook/alipay/notify"
-return_url = "https://your-domain.com/payment/success"
+# 对账定时任务（可选）
+reconciliation_cron_enable = true
+reconciliation_cron_time = "02:00"   # 每日凌晨 2 点执行前一日对账
 ```
 
 ### 3. 周期扣款配置
 
-使用周期扣款需要额外开通：
+使用周期扣款需额外开通：
 
 1. 申请开通 **周期扣款** 产品
 2. 获取 **个人签约产品码**（如 `CYCLE_PAY_AUTH_P`）
 3. 确定 **签约场景**（如 `INDUSTRY|MEDICAL_INSURANCE`）
+
+### 4. 免密支付配置
+
+使用免密代扣需额外开通 **代扣** 产品，并配置 `withhold_notify_url` 接收签约通知。
 
 ## 支付流程
 
 ### 普通支付流程
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           支付宝支付流程                                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-
     客户端                     服务端                      支付宝
       │                         │                            │
       │  1. 创建订单            │                            │
-      │ ─────────────────────> │                            │
       │  POST /alipay/orders    │                            │
-      │                         │                            │
-      │  返回 order_id, order_no│                            │
-      │ <───────────────────── │                            │
+      │  {allow_duplicate}      │                            │
+      │ ─────────────────────> │                            │
       │                         │                            │
       │  2. 创建支付            │                            │
-      │ ─────────────────────> │                            │
-      │  POST /alipay/payments  │                            │
-      │  {order_no, pay_type}   │                            │
-      │                         │  调用支付宝下单接口        │
-      │                         │ ─────────────────────────> │
+      │  POST /alipay/payments  │  调用支付宝下单           │
+      │  {order_no, pay_type}   │ ─────────────────────────> │
       │                         │                            │
-      │  返回支付 URL/参数      │                            │
+      │  返回 payment_url       │                            │
       │ <───────────────────── │                            │
       │                         │                            │
       │  3. 跳转支付宝支付      │                            │
       │ ─────────────────────────────────────────────────> │
-      │  (WAP/PAGE/APP)         │                            │
-      │                         │                            │
-      │  支付完成，同步返回     │                            │
-      │ <───────────────────────────────────────────────── │
       │                         │                            │
       │                         │  4. 异步通知               │
-      │                         │ <───────────────────────── │
       │                         │  POST /webhook/alipay/notify│
-      │                         │                            │
-      │                         │  验证签名，更新订单        │
-      │                         │                            │
-      │                         │  返回 "success"           │
-      │                         │ ─────────────────────────> │
-      │                         │                            │
-      │  5. (可选) 主动查询     │                            │
-      │ ─────────────────────> │                            │
-      │  GET /alipay/orders/query                            │
-      │                         │  调用查询接口              │
-      │                         │ ─────────────────────────> │
       │                         │ <───────────────────────── │
+      │                         │  验证签名、幂等、金额校验  │
+      │                         │  更新订单状态              │
+      │                         │                            │
+      │  5. 主动查询（可选）    │                            │
+      │  GET /alipay/orders/query?order_no=xxx               │
+      │ ─────────────────────> │  调用 TradeQuery 同步状态   │
+      │                         │ ─────────────────────────> │
       │  返回最新状态           │                            │
       │ <───────────────────── │                            │
-      │                         │                            │
-      └                         └                            └
 ```
 
 ### 周期扣款流程
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          周期扣款（签约）流程                                  │
-└─────────────────────────────────────────────────────────────────────────────┘
-
     客户端                     服务端                      支付宝
       │                         │                            │
-      │  1. 创建周期扣款订单    │                            │
-      │ ─────────────────────> │                            │
-      │  POST /alipay/subscriptions                         │
-      │                         │  调用签约接口              │
+      │  1. 创建周期扣款        │                            │
+      │  POST /alipay/subscriptions                          │
+      │ ─────────────────────> │  调用签约接口               │
       │                         │ ─────────────────────────> │
-      │                         │  返回签约 URL              │
-      │                         │ <───────────────────────── │
-      │  返回 sign_url          │                            │
+      │  返回 sign_url         │                            │
       │ <───────────────────── │                            │
       │                         │                            │
       │  2. 跳转签约页面        │                            │
       │ ─────────────────────────────────────────────────> │
       │                         │                            │
-      │  用户确认签约           │                            │
-      │ <───────────────────────────────────────────────── │
-      │                         │                            │
       │                         │  3. 签约成功通知           │
+      │                         │  POST /webhook/alipay/subscription
       │                         │ <───────────────────────── │
-      │                         │  POST /webhook/alipay/subscription│
-      │                         │  {status: "NORMAL", agreement_no}│
       │                         │                            │
-      │                         │  保存协议号，更新状态      │
-      │                         │ ─────────────────────────> │
-      │                         │                            │
-      └                         │                            │
-                                │                            │
-      ┌───────────── 后续周期扣款 (系统自动触发) ───────────┐
-      │                         │                            │
-      │                         │  到期自动扣款             │
+      │  4. 到期自动扣款       │                            │
+      │                         │  POST /webhook/alipay/deduct
       │                         │ <───────────────────────── │
-      │                         │  POST /webhook/alipay/deduct│
-      │                         │  {status: "SUCCESS", amount}│
-      │                         │                            │
-      │                         │  记录扣款，更新统计        │
-      │                         │                            │
-      └                         └                            └
+      │                         │  幂等、分布式锁处理         │
+```
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            解约流程                                          │
-└─────────────────────────────────────────────────────────────────────────────┘
+### 免密支付流程
 
+```
     客户端                     服务端                      支付宝
       │                         │                            │
-      │  用户取消订阅           │                            │
-      │ ─────────────────────> │                            │
-      │  POST /alipay/subscriptions/cancel                  │
-      │  {out_request_no, cancel_reason}                    │
-      │                         │                            │
-      │                         │  调用解约接口              │
+      │  1. 创建免密签约        │                            │
+      │  POST /alipay/withhold/agreements                    │
+      │ ─────────────────────> │  调用签约接口               │
       │                         │ ─────────────────────────> │
-      │                         │  alipay.user.agreement.unsign│
-      │                         │                            │
-      │                         │  返回解约结果              │
-      │                         │ <───────────────────────── │
-      │                         │                            │
-      │                         │  更新协议状态为 STOP       │
-      │                         │                            │
-      │  返回解约成功           │                            │
+      │  返回 sign_url         │                            │
       │ <───────────────────── │                            │
       │                         │                            │
-      └                         └                            └
+      │  2. 跳转签约            │                            │
+      │ ─────────────────────────────────────────────────> │
+      │                         │  签约通知                  │
+      │                         │  POST /webhook/alipay/withhold
+      │                         │ <───────────────────────── │
+      │                         │                            │
+      │  3. 执行单次代扣        │                            │
+      │  POST /alipay/withhold/execute                       │
+      │ ─────────────────────> │  调用代扣接口               │
+      │                         │ ─────────────────────────> │
+      │  返回扣款结果           │                            │
+      │ <───────────────────── │                            │
 ```
 
 ## API 接口
@@ -238,9 +182,14 @@ Content-Type: application/json
   "product_id": "premium_upgrade",
   "subject": "高级会员升级",
   "body": "解锁全部高级功能",
-  "total_amount": 9900
+  "total_amount": 9900,
+  "allow_duplicate": false
 }
 ```
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----|------|-----|------|
+| `allow_duplicate` | bool | 否 | 默认 `false`。为 `false` 时，若存在同用户、同商品、未支付且未过期的订单，则复用该订单 |
 
 **响应：**
 
@@ -270,26 +219,11 @@ Content-Type: application/json
 }
 ```
 
-**pay_type 可选值：**
-
-| 类型 | 说明 | 适用场景 |
-|-----|------|---------|
-| `WAP` | 手机网站支付 | H5 页面 |
-| `PAGE` | 电脑网站支付 | PC 网页 |
-| `APP` | App 支付 | 原生 App |
-
-**响应：**
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "payment_url": "https://openapi.alipay.com/gateway.do?...",
-    "order_no": "ORD20240101120000abcd1234"
-  }
-}
-```
+| pay_type | 说明 |
+|----------|------|
+| `WAP` | 手机网站支付 |
+| `PAGE` | 电脑网站支付 |
+| `APP` | App 支付 |
 
 ### 查询订单
 
@@ -297,22 +231,7 @@ Content-Type: application/json
 GET /api/v1/alipay/orders/query?order_no=ORD20240101120000abcd1234
 ```
 
-**响应：**
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "order_no": "ORD20240101120000abcd1234",
-    "trade_no": "2024010122001400001234567890",
-    "trade_status": "TRADE_SUCCESS",
-    "total_amount": 9900,
-    "payment_status": "COMPLETED",
-    "paid_at": "2024-01-01 12:05:30"
-  }
-}
-```
+查询时会向支付宝发起 `TradeQuery`，若支付宝已支付而本地未同步，则自动更新本地订单状态。
 
 ### 退款
 
@@ -323,295 +242,93 @@ Content-Type: application/json
 {
   "order_no": "ORD20240101120000abcd1234",
   "refund_amount": 9900,
-  "refund_reason": "用户申请退款"
+  "refund_reason": "用户申请退款",
+  "out_request_no": "REF001"
 }
 ```
 
-**响应：**
+| 参数 | 说明 |
+|-----|------|
+| `out_request_no` | 可选。退款请求号，传入相同值可实现重试幂等 |
 
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "refund_request_no": "REFORD20240101120000abcd1234130530",
-    "refund_amount": 9900,
-    "refund_status": "REFUND_SUCCESS",
-    "refund_at": "2024-01-01 13:05:30"
-  }
-}
-```
+### 周期扣款
 
-### 创建周期扣款
+| 接口 | 方法 | 说明 |
+|-----|------|------|
+| 创建周期扣款 | `POST /api/v1/alipay/subscriptions` | 创建签约，返回签约 URL |
+| 查询周期扣款 | `GET /api/v1/alipay/subscriptions/query?out_request_no=xxx` | 查询签约状态 |
+| 取消周期扣款 | `POST /api/v1/alipay/subscriptions/cancel` | 解约 |
 
-```http
-POST /api/v1/alipay/subscriptions
-Content-Type: application/json
+### 免密支付（商户代扣）
 
-{
-  "user_id": 1,
-  "product_id": "monthly_vip",
-  "product_name": "月度会员",
-  "product_desc": "每月自动续费",
-  "period_type": "MONTH",
-  "period": 1,
-  "single_amount": 2999,
-  "total_amount": 35988,
-  "total_payments": 12,
-  "personal_product_code": "CYCLE_PAY_AUTH_P",
-  "sign_scene": "INDUSTRY|MEDICAL_INSURANCE",
-  "execution_time": "2024-01-15T00:00:00Z"
-}
-```
+| 接口 | 方法 | 说明 |
+|-----|------|------|
+| 创建免密签约 | `POST /api/v1/alipay/withhold/agreements` | 创建签约，返回签约 URL |
+| 查询免密签约 | `GET /api/v1/alipay/withhold/agreements/query?out_request_no=xxx` | 查询签约状态 |
+| 执行单次代扣 | `POST /api/v1/alipay/withhold/execute` | 执行扣款 |
 
-**参数说明：**
+### 对账
 
-| 参数 | 类型 | 必填 | 说明 |
-|-----|------|-----|------|
-| `period_type` | string | 是 | 周期类型：`DAY` 或 `MONTH` |
-| `period` | int | 是 | 周期数 |
-| `single_amount` | int64 | 是 | 单次扣款金额（分） |
-| `total_amount` | int64 | 否 | 总金额限制（分） |
-| `total_payments` | int | 否 | 总扣款次数限制 |
-| `execution_time` | string | 否 | 首次扣款时间（默认明天） |
+| 接口 | 方法 | 说明 |
+|-----|------|------|
+| 执行对账 | `POST /api/v1/alipay/reconciliation/run?bill_date=2024-01-15` | 下载指定日期账单并与本地订单比对 |
+| 列出对账报告 | `GET /api/v1/alipay/reconciliation/reports?bill_date=&limit=20` | 列出对账报告 |
+| 获取报告详情 | `GET /api/v1/alipay/reconciliation/reports/:id` | 获取报告及差异明细 |
 
-**响应：**
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "order_id": 1,
-    "out_request_no": "SUB20240101120000abcd1234",
-    "sign_url": "https://openauth.alipay.com/oauth2/appToAppAuth.htm?...",
-    "status": "TEMP",
-    "execution_time": "2024-01-15 00:00:00"
-  }
-}
-```
-
-### 查询周期扣款
-
-```http
-GET /api/v1/alipay/subscriptions/query?out_request_no=SUB20240101120000abcd1234
-```
-
-**响应：**
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "out_request_no": "SUB20240101120000abcd1234",
-    "agreement_no": "20240101000000000000",
-    "status": "NORMAL",
-    "sign_time": "2024-01-01 12:05:30",
-    "valid_time": "2024-01-01 12:05:30",
-    "period_type": "MONTH",
-    "period": 1,
-    "single_amount": "29.99",
-    "total_payments": 12,
-    "current_period": 1,
-    "next_deduct_time": "2024-02-01 00:00:00",
-    "deduct_success_count": 1,
-    "deduct_fail_count": 0
-  }
-}
-```
-
-### 取消周期扣款
-
-```http
-POST /api/v1/alipay/subscriptions/cancel
-Content-Type: application/json
-
-{
-  "out_request_no": "SUB20240101120000abcd1234",
-  "agreement_no": "20240101000000000000",
-  "cancel_reason": "用户主动取消"
-}
-```
+对账逻辑：通过 `BillDownloadURLQuery` 获取对账文件，自动下载并解析 ZIP/CSV（支持 GBK 编码），与本地订单逐笔比对金额与状态，记录差异（`alipay_only`、`local_only`、`amount_mismatch`）。
 
 ## Webhook 处理
 
-### 支付通知
+| 路径 | 说明 |
+|-----|------|
+| `POST /webhook/alipay/notify` | 支付异步通知 |
+| `POST /webhook/alipay/subscription` | 周期扣款签约通知 |
+| `POST /webhook/alipay/deduct` | 周期扣款扣款通知 |
+| `POST /webhook/alipay/withhold` | 免密签约通知 |
 
-```
-POST /webhook/alipay/notify
-Content-Type: application/x-www-form-urlencoded
+### 支付通知处理要点
 
-out_trade_no=ORD20240101120000abcd1234
-&trade_no=2024010122001400001234567890
-&trade_status=TRADE_SUCCESS
-&total_amount=99.00
-&buyer_user_id=2088000000000000
-&gmt_payment=2024-01-01+12%3A05%3A30
-&sign=xxx
-&sign_type=RSA2
-```
+- **签名验证**：所有通知必须验证签名
+- **幂等**：订单已支付完成直接返回成功
+- **金额校验**：通知金额与订单金额必须一致
+- **分布式锁**：Redis 锁保证同一订单并发通知串行处理
 
-**trade_status 状态说明：**
+### trade_status 状态
 
 | 状态 | 说明 |
 |-----|------|
 | `WAIT_BUYER_PAY` | 等待买家付款 |
 | `TRADE_SUCCESS` | 交易成功 |
 | `TRADE_CLOSED` | 交易关闭 |
-| `TRADE_FINISHED` | 交易结束（不可退款） |
-
-### 签约通知
-
-```
-POST /webhook/alipay/subscription
-
-agreement_no=20240101000000000000
-&out_request_no=SUB20240101120000abcd1234
-&status=NORMAL
-&sign_time=2024-01-01+12%3A05%3A30
-```
-
-**status 状态说明：**
-
-| 状态 | 说明 |
-|-----|------|
-| `TEMP` | 暂存，等待用户签约 |
-| `NORMAL` | 正常 |
-| `STOP` | 已解约 |
-
-### 扣款通知
-
-```
-POST /webhook/alipay/deduct
-
-agreement_no=20240101000000000000
-&out_trade_no=DEDUCT20240201000000abcd1234
-&trade_no=2024020122001400001234567891
-&status=SUCCESS
-&amount=29.99
-```
+| `TRADE_FINISHED` | 交易结束 |
 
 ## 最佳实践
 
-### 1. 签名验证
+### 1. 防重复下单
 
-所有 Webhook 请求必须验证签名：
+创建订单时设置 `allow_duplicate: false`，系统会复用同用户、同商品、未支付且未过期的订单。
 
-```go
-func (s *AlipayService) HandleNotify(ctx context.Context, notifyData map[string]string) error {
-    // 将 map 转换为 url.Values
-    formData := url.Values{}
-    for k, v := range notifyData {
-        formData.Set(k, v)
-    }
-    
-    // 验证签名
-    err := s.client.VerifySign(formData)
-    if err != nil {
-        return errors.New("签名验证失败")
-    }
-    
-    // 处理通知...
-}
-```
+### 2. 订单超时取消
 
-### 2. 幂等性处理
+系统定时任务每分钟执行，自动取消已过期的待支付订单。也可手动调用 `POST /api/v1/orders/cancel-expired`。
 
-使用订单号确保幂等：
+### 3. 主动查询兜底
 
-```go
-func HandlePaymentNotify(notifyData map[string]string) error {
-    outTradeNo := notifyData["out_trade_no"]
-    
-    // 查询订单
-    var order models.Order
-    err := db.Where("order_no = ?", outTradeNo).First(&order).Error
-    if err != nil {
-        return err
-    }
-    
-    // 检查是否已处理
-    if order.PaymentStatus == models.PaymentStatusCompleted {
-        return nil // 已处理，直接返回成功
-    }
-    
-    // 处理通知...
-}
-```
+- **客户端**：支付完成后轮询 `GET /api/v1/alipay/orders/query` 获取最新状态
+- **服务端**：定时任务每 2 分钟对最近 2 小时内创建的待支付订单调用 `TradeQuery` 同步状态
 
-### 3. 返回正确响应
+### 4. 对账兜底
 
-Webhook 处理成功必须返回 `success`，否则支付宝会重试：
+启用 `reconciliation_cron_enable` 后，每日在指定时间自动执行前一日对账。也可手动调用 `POST /api/v1/alipay/reconciliation/run?bill_date=yyyy-MM-dd`。
 
-```go
-func HandleAlipayNotify(c *gin.Context) {
-    // 解析通知数据
-    notifyData := make(map[string]string)
-    for key, values := range c.Request.Form {
-        if len(values) > 0 {
-            notifyData[key] = values[0]
-        }
-    }
-    
-    // 处理通知
-    err := alipayService.HandleNotify(c.Request.Context(), notifyData)
-    if err != nil {
-        c.String(http.StatusOK, "fail")
-        return
-    }
-    
-    // 必须返回 "success"
-    c.String(http.StatusOK, "success")
-}
-```
+### 5. 金额单位
 
-### 4. 周期扣款最佳实践
+- 内部存储使用**分**（int64）
+- 与支付宝交互时使用**元**（字符串）
 
-```go
-// 创建周期扣款时设置合理的参数
-req := &CreateAlipaySubscriptionRequest{
-    PeriodType:    "MONTH",
-    Period:        1,
-    SingleAmount:  2999,          // 单次最大金额
-    TotalAmount:   35988,         // 总金额限制（可选）
-    TotalPayments: 12,            // 最多扣款12次
-    ExecutionTime: nextMonth,     // 首次扣款时间
-}
+### 6. Webhook 响应
 
-// 监控扣款失败
-func MonitorDeductFailures() {
-    var subscriptions []models.AlipaySubscription
-    db.Where("deduct_fail_count > 0 AND status = ?", "NORMAL").Find(&subscriptions)
-    
-    for _, sub := range subscriptions {
-        // 发送通知提醒用户
-        if sub.DeductFailCount >= 3 {
-            notifyUserPaymentIssue(sub.UserID)
-        }
-    }
-}
-```
-
-### 5. 金额处理
-
-支付宝金额单位为元，内部存储建议使用分：
-
-```go
-// 将分转换为元字符串
-func formatAmount(amount int64) string {
-    return fmt.Sprintf("%.2f", float64(amount)/100)
-}
-
-// 将元字符串转换为分
-func parseAmount(amountStr string) (int64, error) {
-    amount, err := strconv.ParseFloat(amountStr, 64)
-    if err != nil {
-        return 0, err
-    }
-    return int64(amount * 100), nil
-}
-```
+处理成功必须返回 `success`，否则支付宝会重试。
 
 ## 相关文档
 
@@ -619,5 +336,6 @@ func parseAmount(amountStr string) (int64, error) {
 - [手机网站支付](https://opendocs.alipay.com/open/02ivbs)
 - [电脑网站支付](https://opendocs.alipay.com/open/270)
 - [周期扣款](https://opendocs.alipay.com/open/02fkar)
+- [代扣](https://opendocs.alipay.com/open/02ekfg)
+- [账单下载](https://opendocs.alipay.com/open/02e7go)
 - [异步通知](https://opendocs.alipay.com/open/203/105286)
-

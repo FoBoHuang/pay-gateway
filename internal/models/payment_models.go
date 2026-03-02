@@ -222,6 +222,39 @@ type AlipayRefund struct {
 	UpdatedAt                    time.Time  `json:"updated_at"`
 }
 
+// AlipayReconciliationReport 支付宝对账任务表
+type AlipayReconciliationReport struct {
+	ID             uint       `gorm:"primarykey" json:"id"`
+	BillDate       string     `gorm:"not null;index;size:10" json:"bill_date"` // 对账日期 yyyy-MM-dd
+	BillType       string     `gorm:"not null;size:20" json:"bill_type"`       // trade-交易账单
+	Status         string     `gorm:"not null;size:20;index" json:"status"`    // pending/processing/completed/failed
+	DownloadURL    string     `gorm:"size:512" json:"download_url,omitempty"`  // 对账文件下载地址
+	TotalCount     int        `json:"total_count"`                             // 支付宝账单总笔数
+	MatchCount     int        `json:"match_count"`                             // 匹配笔数
+	DiffCount      int        `json:"diff_count"`                              // 差异笔数
+	LocalOnlyCount int        `json:"local_only_count"`                        // 仅本地有笔数
+	ErrorMessage   string     `gorm:"size:500" json:"error_message,omitempty"` // 失败原因
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+// AlipayReconciliationDetail 支付宝对账明细（差异记录）
+type AlipayReconciliationDetail struct {
+	ID              uint      `gorm:"primarykey" json:"id"`
+	ReportID        uint      `gorm:"not null;index" json:"report_id"`
+	OutTradeNo      string    `gorm:"not null;index;size:64" json:"out_trade_no"` // 商户订单号
+	AlipayTradeNo   string    `gorm:"size:64" json:"alipay_trade_no,omitempty"`   // 支付宝交易号
+	DiffType        string    `gorm:"not null;size:32;index" json:"diff_type"`    // alipay_only/local_only/amount_mismatch/status_mismatch
+	AlipayAmount    string    `gorm:"size:20" json:"alipay_amount,omitempty"`     // 支付宝金额（元）
+	LocalAmount     int64     `json:"local_amount,omitempty"`                     // 本地金额（分）
+	AlipayStatus    string    `gorm:"size:32" json:"alipay_status,omitempty"`     // 支付宝业务类型/状态
+	LocalStatus     string    `gorm:"size:32" json:"local_status,omitempty"`      // 本地支付状态
+	AlipayTradeType string    `gorm:"size:32" json:"alipay_trade_type,omitempty"` // 业务类型：交易、退款等
+	CreatedAt       time.Time `json:"created_at"`
+}
+
 // JSON 自定义JSON类型
 type JSON map[string]interface{}
 
@@ -343,6 +376,39 @@ type WechatRefund struct {
 	ErrorMessage    string     `gorm:"size:256" json:"error_message,omitempty"`           // 错误描述
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+// AlipayDeductRecord 支付宝周期扣款记录（每次扣款一条，用于幂等去重）
+type AlipayDeductRecord struct {
+	ID             uint       `gorm:"primarykey" json:"id"`
+	SubscriptionID uint       `gorm:"not null;index" json:"subscription_id"`            // 订阅ID
+	OrderID        uint       `gorm:"not null;index" json:"order_id"`                   // 关联订单ID
+	AgreementNo    string     `gorm:"not null;index;size:64" json:"agreement_no"`       // 协议号
+	OutTradeNo     string     `gorm:"not null;uniqueIndex;size:64" json:"out_trade_no"` // 商户扣款单号（幂等键）
+	TradeNo        string     `gorm:"not null;uniqueIndex;size:64" json:"trade_no"`     // 支付宝交易号（幂等键）
+	Amount         string     `gorm:"not null;size:20" json:"amount"`                   // 扣款金额（元）
+	Status         string     `gorm:"not null;size:32;index" json:"status"`             // SUCCESS/FAIL
+	DeductTime     *time.Time `json:"deduct_time,omitempty"`                            // 扣款时间
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+// AlipayWithholdAgreement 支付宝免密签约记录（商户代扣，单次扣款无需用户确认）
+type AlipayWithholdAgreement struct {
+	ID                  uint       `gorm:"primarykey" json:"id"`
+	UserID              uint       `gorm:"not null;index" json:"user_id"`                      // 用户ID
+	AgreementNo         string     `gorm:"uniqueIndex;size:64" json:"agreement_no"`            // 支付宝协议号
+	OutRequestNo        string     `gorm:"not null;uniqueIndex;size:64" json:"out_request_no"` // 商户签约号
+	ExternalAgreementNo string     `gorm:"size:32" json:"external_agreement_no,omitempty"`     // 代扣协议中标示用户的唯一签约号
+	Status              string     `gorm:"not null;size:32;index" json:"status"`               // NORMAL-正常 STOP-已解约
+	SignTime            *time.Time `json:"sign_time,omitempty"`                                // 签约时间
+	ValidTime           *time.Time `json:"valid_time,omitempty"`                               // 协议生效时间
+	InvalidTime         *time.Time `json:"invalid_time,omitempty"`                             // 协议失效时间
+	CancelTime          *time.Time `json:"cancel_time,omitempty"`                              // 解约时间
+	AppID               string     `gorm:"size:32;index" json:"app_id"`                        // 支付宝应用ID
+	PersonalProductCode string     `gorm:"size:64" json:"personal_product_code,omitempty"`     // 个人签约产品码 GENERAL_WITHHOLDING_P
+	SignScene           string     `gorm:"size:64" json:"sign_scene,omitempty"`                // 签约场景
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 // AlipaySubscription 支付宝订阅（周期扣款）详情

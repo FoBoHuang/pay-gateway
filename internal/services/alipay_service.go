@@ -8,14 +8,23 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	alipay "github.com/smartwalle/alipay/v3"
 	"gorm.io/gorm"
 
+	"pay-gateway/internal/cache"
 	"pay-gateway/internal/config"
 	"pay-gateway/internal/models"
+)
+
+const (
+	lockKeyPrefixNotify = "alipay:notify:lock:"
+	lockKeyPrefixDeduct = "alipay:deduct:lock:"
+	lockKeyExpiration   = 30 * time.Second
 )
 
 // AlipayService 支付宝支付服务
@@ -23,10 +32,12 @@ type AlipayService struct {
 	client *alipay.Client
 	db     *gorm.DB
 	config *config.AlipayConfig
+	redis  *cache.Redis // 可选，用于分布式锁
 }
 
 // NewAlipayService 创建支付宝支付服务
-func NewAlipayService(db *gorm.DB, cfg *config.AlipayConfig) (*AlipayService, error) {
+// redis 可选，传入 nil 时不使用分布式锁
+func NewAlipayService(db *gorm.DB, cfg *config.AlipayConfig, redis *cache.Redis) (*AlipayService, error) {
 	// 创建支付宝客户端（直接使用私钥字符串）
 	client, err := alipay.New(cfg.AppID, cfg.PrivateKey, cfg.IsProduction)
 	if err != nil {
@@ -50,11 +61,35 @@ func NewAlipayService(db *gorm.DB, cfg *config.AlipayConfig) (*AlipayService, er
 		client: client,
 		db:     db,
 		config: cfg,
+		redis:  redis,
 	}, nil
 }
 
 // CreateOrder 创建支付宝订单
 func (s *AlipayService) CreateOrder(ctx context.Context, req *CreateAlipayOrderRequest) (*CreateAlipayOrderResponse, error) {
+	// 1. 防重复下单：检查是否存在同用户、同商品、未支付的待支付订单（且未过期）
+	if !req.AllowDuplicate {
+		var existingOrder models.Order
+		err := s.db.Where("user_id = ? AND product_id = ? AND payment_method = ? AND payment_status = ?",
+			req.UserID, req.ProductID, models.PaymentMethodAlipay, models.PaymentStatusPending).
+			Where("(expired_at IS NULL OR expired_at > ?)", time.Now()).
+			Order("created_at DESC").
+			First(&existingOrder).Error
+		if err == nil {
+			// 存在可复用的待支付订单，直接返回
+			var ap models.AlipayPayment
+			if s.db.Where("order_id = ?", existingOrder.ID).First(&ap).Error == nil {
+				return &CreateAlipayOrderResponse{
+					OrderID:     existingOrder.ID,
+					OrderNo:     existingOrder.OrderNo,
+					TotalAmount: existingOrder.TotalAmount,
+					Subject:     existingOrder.Title,
+					Description: existingOrder.Description,
+				}, nil
+			}
+		}
+	}
+
 	// 生成系统订单号
 	orderNo := generateOrderNo()
 
@@ -130,12 +165,28 @@ func (s *AlipayService) CreateOrder(ctx context.Context, req *CreateAlipayOrderR
 	}, nil
 }
 
+// validateOrderForPayment 校验订单是否可创建支付（未支付、未过期）
+func (s *AlipayService) validateOrderForPayment(order *models.Order) error {
+	if order.PaymentStatus != models.PaymentStatusPending {
+		return fmt.Errorf("订单已支付，无法重复创建支付")
+	}
+	if order.ExpiredAt != nil && order.ExpiredAt.Before(time.Now()) {
+		return fmt.Errorf("订单已过期，请重新下单")
+	}
+	return nil
+}
+
 // CreateWapPayment 创建手机网站支付
 func (s *AlipayService) CreateWapPayment(ctx context.Context, orderNo string) (string, error) {
 	// 查询订单
 	var order models.Order
 	if err := s.db.Where("order_no = ?", orderNo).First(&order).Error; err != nil {
 		return "", fmt.Errorf("订单不存在: %v", err)
+	}
+
+	// 创建支付前校验：未支付、未过期
+	if err := s.validateOrderForPayment(&order); err != nil {
+		return "", err
 	}
 
 	// 查询支付宝支付记录
@@ -171,6 +222,11 @@ func (s *AlipayService) CreatePagePayment(ctx context.Context, orderNo string) (
 		return "", fmt.Errorf("订单不存在: %v", err)
 	}
 
+	// 创建支付前校验：未支付、未过期
+	if err := s.validateOrderForPayment(&order); err != nil {
+		return "", err
+	}
+
 	// 查询支付宝支付记录
 	var alipayPayment models.AlipayPayment
 	if err := s.db.Where("order_id = ?", order.ID).First(&alipayPayment).Error; err != nil {
@@ -204,6 +260,11 @@ func (s *AlipayService) CreateAppPayment(ctx context.Context, orderNo string) (s
 		return "", fmt.Errorf("订单不存在: %v", err)
 	}
 
+	// 创建支付前校验：未支付、未过期
+	if err := s.validateOrderForPayment(&order); err != nil {
+		return "", err
+	}
+
 	// 查询支付宝支付记录
 	var alipayPayment models.AlipayPayment
 	if err := s.db.Where("order_id = ?", order.ID).First(&alipayPayment).Error; err != nil {
@@ -230,7 +291,7 @@ func (s *AlipayService) CreateAppPayment(ctx context.Context, orderNo string) (s
 
 // HandleNotify 处理支付宝异步通知
 func (s *AlipayService) HandleNotify(ctx context.Context, notifyData map[string]string) error {
-	// 验证签名
+	// 1. 验证签名
 	formData := url.Values{}
 	for k, v := range notifyData {
 		formData.Set(k, v)
@@ -244,12 +305,42 @@ func (s *AlipayService) HandleNotify(ctx context.Context, notifyData map[string]
 	outTradeNo := notifyData["out_trade_no"]
 	tradeNo := notifyData["trade_no"]
 	tradeStatus := notifyData["trade_status"]
-	_ = notifyData["total_amount"] // 总金额，暂时未使用
+	totalAmountStr := notifyData["total_amount"]
+
+	// 2. 分布式锁：保证同一订单的并发通知串行处理
+	if s.redis != nil {
+		lockKey := lockKeyPrefixNotify + outTradeNo
+		ok, lockErr := s.redis.SetNX(ctx, lockKey, "1", lockKeyExpiration)
+		if lockErr != nil {
+			return fmt.Errorf("获取分布式锁失败: %w", lockErr)
+		}
+		if !ok {
+			return errors.New("订单正在处理中，请稍后重试")
+		}
+		// 处理完成后主动释放锁，避免锁占用过久
+		defer func() { _ = s.redis.Del(context.Background(), lockKey) }()
+	}
 
 	// 查询订单
 	var order models.Order
 	if err := s.db.Where("order_no = ?", outTradeNo).First(&order).Error; err != nil {
 		return fmt.Errorf("订单不存在: %v", err)
+	}
+
+	// 3. 幂等性：订单已支付完成直接返回成功
+	if order.PaymentStatus == models.PaymentStatusCompleted {
+		return nil
+	}
+
+	// 4. 金额校验：防止通知中的金额与订单金额不一致
+	if totalAmountStr != "" {
+		notifyAmountFen, parseErr := parseAmountFromYuan(totalAmountStr)
+		if parseErr != nil {
+			return fmt.Errorf("解析通知金额失败: %w", parseErr)
+		}
+		if notifyAmountFen != order.TotalAmount {
+			return fmt.Errorf("金额校验失败: 通知金额=%d(分) 与订单金额=%d(分) 不一致", notifyAmountFen, order.TotalAmount)
+		}
 	}
 
 	// 查询支付宝支付记录
@@ -392,6 +483,29 @@ func (s *AlipayService) QueryOrder(ctx context.Context, orderNo string) (*QueryA
 	}, nil
 }
 
+// SyncPendingOrders 服务端主动查询兜底：轮询待支付支付宝订单，向支付宝查询并同步状态
+func (s *AlipayService) SyncPendingOrders(ctx context.Context) (syncedCount int, err error) {
+	now := time.Now()
+	var orders []models.Order
+	err = s.db.WithContext(ctx).
+		Where("payment_method = ? AND payment_status = ? AND status = ?",
+			models.PaymentMethodAlipay, models.PaymentStatusPending, models.OrderStatusCreated).
+		Where("(expired_at IS NULL OR expired_at > ?)", now).
+		Order("created_at ASC").
+		Limit(50).
+		Find(&orders).Error
+	if err != nil {
+		return 0, fmt.Errorf("查询待支付订单失败: %w", err)
+	}
+	for _, order := range orders {
+		if _, qErr := s.QueryOrder(ctx, order.OrderNo); qErr != nil {
+			continue
+		}
+		syncedCount++
+	}
+	return syncedCount, nil
+}
+
 // Refund 退款
 func (s *AlipayService) Refund(ctx context.Context, req *RefundRequest) (*RefundResponse, error) {
 	// 查询订单
@@ -411,8 +525,24 @@ func (s *AlipayService) Refund(ctx context.Context, req *RefundRequest) (*Refund
 		return nil, fmt.Errorf("支付宝支付记录不存在: %v", err)
 	}
 
-	// 生成退款请求号
-	refundRequestNo := generateRefundRequestNo(req.OrderNo)
+	// 退款幂等：确定 out_request_no，支持调用方传入以实现重试幂等
+	refundRequestNo := req.OutRequestNo
+	if refundRequestNo == "" {
+		refundRequestNo = generateRefundRequestNo(req.OrderNo)
+	}
+
+	// 幂等检查：若该退款请求号已处理成功，直接返回
+	var existingRefund models.AlipayRefund
+	if err := s.db.Where("out_request_no = ?", refundRequestNo).First(&existingRefund).Error; err == nil {
+		if existingRefund.RefundStatus == "REFUND_SUCCESS" {
+			return &RefundResponse{
+				RefundRequestNo: existingRefund.OutRequestNo,
+				RefundAmount:    parseRefundAmount(existingRefund.RefundAmount),
+				RefundStatus:    existingRefund.RefundStatus,
+				RefundAt:        existingRefund.GmtRefundPay,
+			}, nil
+		}
+	}
 
 	// 构建退款请求
 	p := alipay.TradeRefund{}
@@ -513,6 +643,26 @@ func generateRefundRequestNo(orderNo string) string {
 
 func formatAmount(amount int64) string {
 	return fmt.Sprintf("%.2f", float64(amount)/100)
+}
+
+// parseRefundAmount 将退款金额字符串（元）解析为分，解析失败返回 0
+func parseRefundAmount(s string) int64 {
+	fen, _ := parseAmountFromYuan(s)
+	return fen
+}
+
+// parseAmountFromYuan 将支付宝金额字符串（元，如 "29.99"）解析为分（int64）
+func parseAmountFromYuan(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("金额字符串为空")
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("解析金额失败: %w", err)
+	}
+	// 转为分，四舍五入避免浮点误差
+	return int64(f*100 + 0.5), nil
 }
 
 // ==================== 周期扣款（订阅）功能 ====================
@@ -660,6 +810,264 @@ func (s *AlipayService) QuerySubscription(ctx context.Context, outRequestNo stri
 	return s.buildSubscriptionResponse(&subscription), nil
 }
 
+// ==================== 免密支付（商户代扣）功能 ====================
+
+const (
+	withholdOutRequestNoPrefix = "WH"
+	defaultWithholdProductCode = "GENERAL_WITHHOLDING_P"
+	defaultWithholdSignScene   = "DEFAULT|DEFAULT"
+)
+
+// getWithholdNotifyURL 获取免密签约通知URL
+func (s *AlipayService) getWithholdNotifyURL() string {
+	if s.config.WithholdNotifyURL != "" {
+		return s.config.WithholdNotifyURL
+	}
+	// 从 NotifyURL 派生：将 /notify 替换为 /withhold，若无则追加 /withhold
+	if strings.HasSuffix(s.config.NotifyURL, "/notify") {
+		return strings.TrimSuffix(s.config.NotifyURL, "/notify") + "/withhold"
+	}
+	return strings.TrimSuffix(s.config.NotifyURL, "/") + "/withhold"
+}
+
+// CreateWithholdAgreement 创建免密签约（商户代扣）
+func (s *AlipayService) CreateWithholdAgreement(ctx context.Context, req *CreateWithholdAgreementRequest) (*CreateWithholdAgreementResponse, error) {
+	outRequestNo := fmt.Sprintf("%s%s%s", withholdOutRequestNoPrefix, time.Now().Format("20060102150405"), uuid.New().String()[:8])
+
+	productCode := defaultWithholdProductCode
+	if req.PersonalProductCode != "" {
+		productCode = req.PersonalProductCode
+	}
+	signScene := defaultWithholdSignScene
+	if req.SignScene != "" {
+		signScene = req.SignScene
+	}
+
+	agreement := &models.AlipayWithholdAgreement{
+		UserID:              req.UserID,
+		OutRequestNo:        outRequestNo,
+		Status:              "TEMP",
+		AppID:               s.config.AppID,
+		PersonalProductCode: productCode,
+		SignScene:           signScene,
+	}
+
+	if err := s.db.Create(agreement).Error; err != nil {
+		return nil, fmt.Errorf("创建免密签约记录失败: %v", err)
+	}
+
+	p := alipay.AgreementPageSign{}
+	p.NotifyURL = s.getWithholdNotifyURL()
+	p.ReturnURL = s.config.ReturnURL
+	p.PersonalProductCode = productCode
+	p.SignScene = signScene
+	p.ExternalAgreementNo = outRequestNo
+	p.AccessParams = &alipay.AccessParams{Channel: "ALIPAYAPP"}
+
+	signURL, err := s.client.AgreementPageSign(p)
+	if err != nil {
+		return nil, fmt.Errorf("生成签约URL失败: %v", err)
+	}
+
+	return &CreateWithholdAgreementResponse{
+		OutRequestNo: outRequestNo,
+		SignURL:      signURL.String(),
+		Status:       "TEMP",
+	}, nil
+}
+
+// HandleWithholdNotify 处理免密签约通知
+func (s *AlipayService) HandleWithholdNotify(ctx context.Context, notifyData map[string]string) error {
+	formData := url.Values{}
+	for k, v := range notifyData {
+		formData.Set(k, v)
+	}
+	if err := s.client.VerifySign(formData); err != nil {
+		return errors.New("签名验证失败")
+	}
+
+	outRequestNo := notifyData["out_request_no"]
+	agreementNo := notifyData["agreement_no"]
+	status := notifyData["status"]
+
+	var agreement models.AlipayWithholdAgreement
+	if err := s.db.Where("out_request_no = ?", outRequestNo).First(&agreement).Error; err != nil {
+		return fmt.Errorf("免密签约记录不存在: %v", err)
+	}
+
+	agreement.AgreementNo = agreementNo
+	agreement.Status = status
+
+	if status == "NORMAL" {
+		if signTime, ok := notifyData["sign_time"]; ok {
+			if t, err := time.Parse("2006-01-02 15:04:05", signTime); err == nil {
+				agreement.SignTime = &t
+			}
+		}
+		if validTime, ok := notifyData["valid_time"]; ok {
+			if t, err := time.Parse("2006-01-02 15:04:05", validTime); err == nil {
+				agreement.ValidTime = &t
+			}
+		}
+		if invalidTime, ok := notifyData["invalid_time"]; ok {
+			if t, err := time.Parse("2006-01-02 15:04:05", invalidTime); err == nil {
+				agreement.InvalidTime = &t
+			}
+		}
+	} else if status == "STOP" {
+		now := time.Now()
+		agreement.CancelTime = &now
+	}
+
+	return s.db.Save(&agreement).Error
+}
+
+// ExecuteWithhold 执行单次代扣（免密支付）
+func (s *AlipayService) ExecuteWithhold(ctx context.Context, req *ExecuteWithholdRequest) (*ExecuteWithholdResponse, error) {
+	var agreement models.AlipayWithholdAgreement
+	if err := s.db.Where("agreement_no = ? AND user_id = ? AND status = ?", req.AgreementNo, req.UserID, "NORMAL").First(&agreement).Error; err != nil {
+		return nil, fmt.Errorf("免密协议不存在或已失效: %v", err)
+	}
+
+	orderNo := generateOrderNo()
+
+	order := &models.Order{
+		OrderNo:       orderNo,
+		UserID:        req.UserID,
+		ProductID:     req.ProductID,
+		Type:          models.OrderTypePurchase,
+		Title:         req.Subject,
+		Description:   req.Body,
+		Quantity:      1,
+		Currency:      "CNY",
+		TotalAmount:   req.TotalAmount,
+		Status:        models.OrderStatusCreated,
+		PaymentMethod: models.PaymentMethodAlipay,
+		PaymentStatus: models.PaymentStatusPending,
+	}
+
+	tx := s.db.Begin()
+	if err := tx.Create(order).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("创建订单失败: %v", err)
+	}
+
+	alipayPayment := &models.AlipayPayment{
+		OrderID:     order.ID,
+		OutTradeNo:  orderNo,
+		TotalAmount: formatAmount(req.TotalAmount),
+		Subject:     req.Subject,
+		Body:        req.Body,
+		TradeStatus: "WAIT_BUYER_PAY",
+		AppID:       s.config.AppID,
+		AgreementNo: agreement.AgreementNo,
+	}
+	if err := tx.Create(alipayPayment).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("创建支付记录失败: %v", err)
+	}
+
+	transaction := &models.PaymentTransaction{
+		OrderID:       order.ID,
+		TransactionID: orderNo,
+		Provider:      models.PaymentProviderAlipay,
+		Type:          "PAYMENT",
+		Amount:        req.TotalAmount,
+		Currency:      "CNY",
+		Status:        models.PaymentStatusPending,
+		ProviderData:  models.JSON{},
+	}
+	if err := tx.Create(transaction).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("创建交易记录失败: %v", err)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, fmt.Errorf("提交事务失败: %v", err)
+	}
+
+	// 调用支付宝代扣接口 alipay.trade.pay
+	payParam := alipay.TradePay{}
+	payParam.OutTradeNo = orderNo
+	payParam.Subject = req.Subject
+	payParam.TotalAmount = formatAmount(req.TotalAmount)
+	payParam.Body = req.Body
+	payParam.ProductCode = "AGREEMENT_PAYMENT"
+	payParam.NotifyURL = s.config.NotifyURL
+	payParam.AgreementParams = &alipay.AgreementParams{AgreementNo: req.AgreementNo}
+	payParam.Scene = "bar_code"
+	payParam.AuthCode = ""
+
+	result, err := s.client.TradePay(ctx, payParam)
+	if err != nil {
+		return nil, fmt.Errorf("代扣请求失败: %v", err)
+	}
+
+	if !result.Code.IsSuccess() {
+		return nil, fmt.Errorf("代扣失败: %s - %s", result.Code, result.Msg)
+	}
+
+	now := time.Now()
+	order.Status = models.OrderStatusPaid
+	order.PaymentStatus = models.PaymentStatusCompleted
+	order.PaidAt = &now
+	s.db.Model(&order).Updates(map[string]interface{}{
+		"status":         order.Status,
+		"payment_status": order.PaymentStatus,
+		"paid_at":        order.PaidAt,
+	})
+
+	alipayPayment.TradeNo = result.TradeNo
+	alipayPayment.TradeStatus = "TRADE_SUCCESS"
+	alipayPayment.BuyerUserID = result.BuyerUserId
+	alipayPayment.BuyerLogonID = result.BuyerLogonId
+	if t, err := time.Parse("2006-01-02 15:04:05", result.GmtPayment); err == nil {
+		alipayPayment.TimeEnd = &t
+	}
+	s.db.Save(alipayPayment)
+
+	transaction.Status = models.PaymentStatusCompleted
+	transaction.ProcessedAt = &now
+	s.db.Save(transaction)
+
+	return &ExecuteWithholdResponse{
+		OrderNo:     orderNo,
+		TradeNo:     result.TradeNo,
+		TotalAmount: req.TotalAmount,
+		TradeStatus: "TRADE_SUCCESS",
+		PaidAt:      &now,
+	}, nil
+}
+
+// QueryWithholdAgreement 查询免密签约状态
+func (s *AlipayService) QueryWithholdAgreement(ctx context.Context, outRequestNo string) (*QueryWithholdAgreementResponse, error) {
+	var agreement models.AlipayWithholdAgreement
+	if err := s.db.Where("out_request_no = ?", outRequestNo).First(&agreement).Error; err != nil {
+		return nil, fmt.Errorf("免密签约记录不存在: %v", err)
+	}
+
+	if agreement.AgreementNo != "" {
+		p := alipay.AgreementQuery{}
+		p.AgreementNo = agreement.AgreementNo
+		if result, err := s.client.AgreementQuery(ctx, p); err == nil && result.Code.IsSuccess() {
+			agreement.Status = result.Status
+			if result.SignTime != "" {
+				if t, err := time.Parse("2006-01-02 15:04:05", result.SignTime); err == nil {
+					agreement.SignTime = &t
+				}
+			}
+			s.db.Save(&agreement)
+		}
+	}
+
+	return &QueryWithholdAgreementResponse{
+		OutRequestNo: agreement.OutRequestNo,
+		AgreementNo:  agreement.AgreementNo,
+		Status:       agreement.Status,
+		SignTime:     agreement.SignTime,
+	}, nil
+}
+
 // buildSubscriptionResponse 构建订阅查询响应
 func (s *AlipayService) buildSubscriptionResponse(subscription *models.AlipaySubscription) *QueryAlipaySubscriptionResponse {
 	return &QueryAlipaySubscriptionResponse{
@@ -805,6 +1213,25 @@ func (s *AlipayService) HandleDeductNotify(ctx context.Context, notifyData map[s
 	amount := notifyData["amount"]
 	status := notifyData["status"] // SUCCESS 或 FAIL
 
+	// 2. 分布式锁：以 out_trade_no 为键，保证同一扣款通知串行处理
+	lockKey := lockKeyPrefixDeduct + outTradeNo
+	if s.redis != nil {
+		ok, lockErr := s.redis.SetNX(ctx, lockKey, "1", lockKeyExpiration)
+		if lockErr != nil {
+			return fmt.Errorf("获取分布式锁失败: %w", lockErr)
+		}
+		if !ok {
+			return errors.New("扣款正在处理中，请稍后重试")
+		}
+		defer func() { _ = s.redis.Del(context.Background(), lockKey) }()
+	}
+
+	// 3. 幂等性：检查 trade_no 或 out_trade_no 是否已处理
+	var existingRecord models.AlipayDeductRecord
+	if err := s.db.Where("trade_no = ? OR out_trade_no = ?", tradeNo, outTradeNo).First(&existingRecord).Error; err == nil {
+		return nil // 已处理过，直接返回成功
+	}
+
 	// 查询周期扣款记录
 	var subscription models.AlipaySubscription
 	if err := s.db.Where("agreement_no = ?", agreementNo).First(&subscription).Error; err != nil {
@@ -835,24 +1262,32 @@ func (s *AlipayService) HandleDeductNotify(ctx context.Context, notifyData map[s
 		subscription.NextDeductTime = &nextTime
 	}
 
-	if err := s.db.Save(&subscription).Error; err != nil {
-		return fmt.Errorf("更新周期扣款记录失败: %v", err)
+	// 开启事务
+	tx := s.db.Begin()
+
+	if err := tx.Save(&subscription).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("更新周期扣款状态失败: %v", err)
 	}
 
-	// 如果扣款成功，创建支付记录
-	if status == "SUCCESS" {
-		// 创建支付宝支付记录
-		alipayPayment := &models.AlipayPayment{
-			OrderID:     subscription.OrderID,
-			OutTradeNo:  outTradeNo,
-			TradeNo:     tradeNo,
-			TotalAmount: amount,
-			Subject:     fmt.Sprintf("周期扣款-%s", agreementNo),
-			TradeStatus: "TRADE_SUCCESS",
-			AppID:       s.config.AppID,
-			TimeEnd:     &now,
-		}
-		s.db.Create(alipayPayment)
+	// 创建扣款记录（用于幂等去重，替代原 AlipayPayment 避免 OrderID 唯一约束冲突）
+	deductRecord := &models.AlipayDeductRecord{
+		SubscriptionID: subscription.ID,
+		OrderID:        subscription.OrderID,
+		AgreementNo:    agreementNo,
+		OutTradeNo:     outTradeNo,
+		TradeNo:        tradeNo,
+		Amount:         amount,
+		Status:         status,
+		DeductTime:     &now,
+	}
+	if err := tx.Create(deductRecord).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("创建扣款记录失败: %v", err)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("提交事务失败: %v", err)
 	}
 
 	return nil
@@ -861,11 +1296,12 @@ func (s *AlipayService) HandleDeductNotify(ctx context.Context, notifyData map[s
 // ==================== 请求和响应结构体 ====================
 
 type CreateAlipayOrderRequest struct {
-	UserID      uint   `json:"user_id" binding:"required"`
-	ProductID   string `json:"product_id" binding:"required"`
-	Subject     string `json:"subject" binding:"required"`
-	Body        string `json:"body"`
-	TotalAmount int64  `json:"total_amount" binding:"required,min=1"`
+	UserID         uint   `json:"user_id" binding:"required"`
+	ProductID      string `json:"product_id" binding:"required"`
+	Subject        string `json:"subject" binding:"required"`
+	Body           string `json:"body"`
+	TotalAmount    int64  `json:"total_amount" binding:"required,min=1"`
+	AllowDuplicate bool   `json:"allow_duplicate"` // 是否允许重复下单，默认 false 时复用已有待支付订单
 }
 
 type CreateAlipayOrderResponse struct {
@@ -889,6 +1325,7 @@ type RefundRequest struct {
 	OrderNo      string `json:"order_no" binding:"required"`
 	RefundAmount int64  `json:"refund_amount" binding:"required,min=1"`
 	RefundReason string `json:"refund_reason" binding:"required"`
+	OutRequestNo string `json:"out_request_no"` // 可选，退款请求号，传入相同值可实现重试幂等
 }
 
 type RefundResponse struct {
@@ -948,4 +1385,42 @@ type CancelAlipaySubscriptionRequest struct {
 	OutRequestNo string `json:"out_request_no"` // 商户签约号
 	AgreementNo  string `json:"agreement_no"`   // 支付宝协议号
 	CancelReason string `json:"cancel_reason" binding:"required"`
+}
+
+// 免密支付（商户代扣）相关结构体
+
+type CreateWithholdAgreementRequest struct {
+	UserID              uint   `json:"user_id" binding:"required"`
+	PersonalProductCode string `json:"personal_product_code"` // 默认 GENERAL_WITHHOLDING_P
+	SignScene           string `json:"sign_scene"`            // 默认 DEFAULT|DEFAULT
+}
+
+type CreateWithholdAgreementResponse struct {
+	OutRequestNo string `json:"out_request_no"`
+	SignURL      string `json:"sign_url"`
+	Status       string `json:"status"`
+}
+
+type ExecuteWithholdRequest struct {
+	UserID      uint   `json:"user_id" binding:"required"`
+	AgreementNo string `json:"agreement_no" binding:"required"`
+	ProductID   string `json:"product_id" binding:"required"`
+	Subject     string `json:"subject" binding:"required"`
+	Body        string `json:"body"`
+	TotalAmount int64  `json:"total_amount" binding:"required,min=1"`
+}
+
+type ExecuteWithholdResponse struct {
+	OrderNo     string     `json:"order_no"`
+	TradeNo     string     `json:"trade_no"`
+	TotalAmount int64      `json:"total_amount"`
+	TradeStatus string     `json:"trade_status"`
+	PaidAt      *time.Time `json:"paid_at,omitempty"`
+}
+
+type QueryWithholdAgreementResponse struct {
+	OutRequestNo string     `json:"out_request_no"`
+	AgreementNo  string     `json:"agreement_no"`
+	Status       string     `json:"status"`
+	SignTime     *time.Time `json:"sign_time,omitempty"`
 }

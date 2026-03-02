@@ -21,6 +21,7 @@ type PaymentService interface {
 	GetOrderByOrderNo(ctx context.Context, orderNo string) (*models.Order, error)
 	UpdateOrderStatus(ctx context.Context, orderID uint, status models.OrderStatus) error
 	CancelOrder(ctx context.Context, orderID uint, reason string) error
+	CancelExpiredOrders(ctx context.Context) (int64, error)
 
 	// 查询相关
 	GetUserOrders(ctx context.Context, userID uint, page, pageSize int) ([]*models.Order, int64, error)
@@ -228,6 +229,26 @@ func (s *paymentServiceImpl) CancelOrder(ctx context.Context, orderID uint, reas
 		zap.String("reason", reason))
 
 	return nil
+}
+
+// CancelExpiredOrders 取消已过期的待支付订单
+func (s *paymentServiceImpl) CancelExpiredOrders(ctx context.Context) (int64, error) {
+	now := time.Now()
+	result := s.db.WithContext(ctx).Model(&models.Order{}).
+		Where("status = ? AND payment_status = ?", models.OrderStatusCreated, models.PaymentStatusPending).
+		Where("expired_at IS NOT NULL AND expired_at < ?", now).
+		Updates(map[string]interface{}{
+			"status":       models.OrderStatusCancelled,
+			"refund_reason": "订单超时自动取消",
+			"refund_at":    now,
+		})
+	if result.Error != nil {
+		return 0, fmt.Errorf("取消过期订单失败: %w", result.Error)
+	}
+	if result.RowsAffected > 0 {
+		s.logger.Info("已取消过期订单", zap.Int64("count", result.RowsAffected))
+	}
+	return result.RowsAffected, nil
 }
 
 // GetUserOrders 获取用户订单列表

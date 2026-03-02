@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,27 +13,30 @@ import (
 
 // AlipayHandler 支付宝处理器
 type AlipayHandler struct {
-	alipayService  *services.AlipayService
-	paymentService services.PaymentService
-	logger         *zap.Logger
+	alipayService           *services.AlipayService
+	reconciliationService   *services.AlipayReconciliationService
+	paymentService          services.PaymentService
+	logger                  *zap.Logger
 }
 
 // NewAlipayHandler 创建支付宝处理器
-func NewAlipayHandler(alipayService *services.AlipayService, paymentService services.PaymentService, logger *zap.Logger) *AlipayHandler {
+func NewAlipayHandler(alipayService *services.AlipayService, reconciliationService *services.AlipayReconciliationService, paymentService services.PaymentService, logger *zap.Logger) *AlipayHandler {
 	return &AlipayHandler{
-		alipayService:  alipayService,
-		paymentService: paymentService,
-		logger:         logger,
+		alipayService:         alipayService,
+		reconciliationService: reconciliationService,
+		paymentService:        paymentService,
+		logger:                logger,
 	}
 }
 
 // CreateAlipayOrderRequest 创建支付宝订单请求
 type CreateAlipayOrderRequest struct {
-	UserID      uint   `json:"user_id" binding:"required"`
-	ProductID   string `json:"product_id" binding:"required"`
-	Subject     string `json:"subject" binding:"required"`
-	Body        string `json:"body"`
-	TotalAmount int64  `json:"total_amount" binding:"required,min=1"`
+	UserID         uint   `json:"user_id" binding:"required"`
+	ProductID      string `json:"product_id" binding:"required"`
+	Subject        string `json:"subject" binding:"required"`
+	Body           string `json:"body"`
+	TotalAmount    int64  `json:"total_amount" binding:"required,min=1"`
+	AllowDuplicate bool   `json:"allow_duplicate"` // 是否允许重复下单，默认 false 时复用已有待支付订单
 }
 
 // CreateAlipayOrderResponse 创建支付宝订单响应
@@ -68,9 +72,10 @@ type QueryAlipayOrderResponse struct {
 
 // RefundRequest 退款请求
 type RefundRequest struct {
-	OrderNo      string `json:"order_no" binding:"required"`
-	RefundAmount int64  `json:"refund_amount" binding:"required,min=1"`
-	RefundReason string `json:"refund_reason" binding:"required"`
+	OrderNo       string `json:"order_no" binding:"required"`
+	RefundAmount  int64  `json:"refund_amount" binding:"required,min=1"`
+	RefundReason  string `json:"refund_reason" binding:"required"`
+	OutRequestNo  string `json:"out_request_no"` // 可选，退款请求号，传入相同值可实现重试幂等
 }
 
 // RefundResponse 退款响应
@@ -102,11 +107,12 @@ func (h *AlipayHandler) CreateAlipayOrder(c *gin.Context) {
 
 	// 转换为服务层请求
 	serviceReq := &services.CreateAlipayOrderRequest{
-		UserID:      req.UserID,
-		ProductID:   req.ProductID,
-		Subject:     req.Subject,
-		Body:        req.Body,
-		TotalAmount: req.TotalAmount,
+		UserID:         req.UserID,
+		ProductID:      req.ProductID,
+		Subject:        req.Subject,
+		Body:           req.Body,
+		TotalAmount:    req.TotalAmount,
+		AllowDuplicate: req.AllowDuplicate,
 	}
 
 	result, err := h.alipayService.CreateOrder(c.Request.Context(), serviceReq)
@@ -239,9 +245,10 @@ func (h *AlipayHandler) AlipayRefund(c *gin.Context) {
 	}
 
 	serviceReq := &services.RefundRequest{
-		OrderNo:      req.OrderNo,
-		RefundAmount: req.RefundAmount,
-		RefundReason: req.RefundReason,
+		OrderNo:       req.OrderNo,
+		RefundAmount:  req.RefundAmount,
+		RefundReason:  req.RefundReason,
+		OutRequestNo:  req.OutRequestNo,
 	}
 
 	result, err := h.alipayService.Refund(c.Request.Context(), serviceReq)
@@ -447,6 +454,124 @@ func (h *AlipayHandler) CancelAlipaySubscription(c *gin.Context) {
 	h.successResponse(c, gin.H{"message": "周期扣款取消成功"})
 }
 
+// ==================== 免密支付（商户代扣）API ====================
+
+// CreateWithholdAgreement 创建免密签约
+// @Summary 创建免密签约
+// @Description 创建支付宝免密签约（商户代扣），用户签约后可在无需输入密码的情况下完成扣款
+// @Tags 支付宝免密
+// @Accept json
+// @Produce json
+// @Param request body CreateWithholdAgreementRequest true "创建免密签约请求"
+// @Success 200 {object} Response{data=CreateWithholdAgreementResponse}
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/alipay/withhold/agreements [post]
+func (h *AlipayHandler) CreateWithholdAgreement(c *gin.Context) {
+	var req CreateWithholdAgreementRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("创建免密签约请求参数错误", zap.Error(err))
+		h.errorResponse(c, 400, "请求参数错误", err)
+		return
+	}
+
+	serviceReq := &services.CreateWithholdAgreementRequest{
+		UserID:              req.UserID,
+		PersonalProductCode: req.PersonalProductCode,
+		SignScene:           req.SignScene,
+	}
+
+	result, err := h.alipayService.CreateWithholdAgreement(c.Request.Context(), serviceReq)
+	if err != nil {
+		h.logger.Error("创建免密签约失败", zap.Error(err))
+		h.errorResponse(c, 500, "创建免密签约失败", err)
+		return
+	}
+
+	h.successResponse(c, &CreateWithholdAgreementResponse{
+		OutRequestNo: result.OutRequestNo,
+		SignURL:      result.SignURL,
+		Status:       result.Status,
+	})
+}
+
+// QueryWithholdAgreement 查询免密签约状态
+// @Summary 查询免密签约状态
+// @Description 查询支付宝免密签约协议状态
+// @Tags 支付宝免密
+// @Accept json
+// @Produce json
+// @Param out_request_no query string true "商户签约号"
+// @Success 200 {object} Response{data=QueryWithholdAgreementResponse}
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/alipay/withhold/agreements/query [get]
+func (h *AlipayHandler) QueryWithholdAgreement(c *gin.Context) {
+	outRequestNo := c.Query("out_request_no")
+	if outRequestNo == "" {
+		h.errorResponse(c, 400, "商户签约号不能为空", nil)
+		return
+	}
+
+	result, err := h.alipayService.QueryWithholdAgreement(c.Request.Context(), outRequestNo)
+	if err != nil {
+		h.logger.Error("查询免密签约失败", zap.Error(err))
+		h.errorResponse(c, 500, "查询免密签约失败", err)
+		return
+	}
+
+	h.successResponse(c, &QueryWithholdAgreementResponse{
+		OutRequestNo: result.OutRequestNo,
+		AgreementNo:  result.AgreementNo,
+		Status:       result.Status,
+		SignTime:     result.SignTime,
+	})
+}
+
+// ExecuteWithhold 执行单次代扣（免密支付）
+// @Summary 执行单次代扣
+// @Description 对已签约用户执行免密扣款，无需用户输入密码
+// @Tags 支付宝免密
+// @Accept json
+// @Produce json
+// @Param request body ExecuteWithholdRequest true "代扣请求"
+// @Success 200 {object} Response{data=ExecuteWithholdResponse}
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/alipay/withhold/execute [post]
+func (h *AlipayHandler) ExecuteWithhold(c *gin.Context) {
+	var req ExecuteWithholdRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("执行代扣请求参数错误", zap.Error(err))
+		h.errorResponse(c, 400, "请求参数错误", err)
+		return
+	}
+
+	serviceReq := &services.ExecuteWithholdRequest{
+		UserID:      req.UserID,
+		AgreementNo: req.AgreementNo,
+		ProductID:   req.ProductID,
+		Subject:     req.Subject,
+		Body:        req.Body,
+		TotalAmount: req.TotalAmount,
+	}
+
+	result, err := h.alipayService.ExecuteWithhold(c.Request.Context(), serviceReq)
+	if err != nil {
+		h.logger.Error("执行代扣失败", zap.Error(err))
+		h.errorResponse(c, 500, "执行代扣失败", err)
+		return
+	}
+
+	h.successResponse(c, &ExecuteWithholdResponse{
+		OrderNo:     result.OrderNo,
+		TradeNo:     result.TradeNo,
+		TotalAmount: result.TotalAmount,
+		TradeStatus: result.TradeStatus,
+		PaidAt:      result.PaidAt,
+	})
+}
+
 // ==================== 周期扣款请求和响应结构体 ====================
 
 type CreateAlipaySubscriptionRequest struct {
@@ -498,3 +623,139 @@ type CancelAlipaySubscriptionRequest struct {
 	AgreementNo  string `json:"agreement_no"`
 	CancelReason string `json:"cancel_reason" binding:"required"`
 }
+
+// 免密支付（商户代扣）请求和响应结构体
+
+type CreateWithholdAgreementRequest struct {
+	UserID              uint   `json:"user_id" binding:"required"`
+	PersonalProductCode string `json:"personal_product_code"` // 默认 GENERAL_WITHHOLDING_P
+	SignScene           string `json:"sign_scene"`             // 默认 DEFAULT|DEFAULT
+}
+
+type CreateWithholdAgreementResponse struct {
+	OutRequestNo string `json:"out_request_no"`
+	SignURL      string `json:"sign_url"`
+	Status       string `json:"status"`
+}
+
+type ExecuteWithholdRequest struct {
+	UserID      uint   `json:"user_id" binding:"required"`
+	AgreementNo string `json:"agreement_no" binding:"required"`
+	ProductID   string `json:"product_id" binding:"required"`
+	Subject     string `json:"subject" binding:"required"`
+	Body        string `json:"body"`
+	TotalAmount int64  `json:"total_amount" binding:"required,min=1"`
+}
+
+type ExecuteWithholdResponse struct {
+	OrderNo     string     `json:"order_no"`
+	TradeNo     string     `json:"trade_no"`
+	TotalAmount int64      `json:"total_amount"`
+	TradeStatus string     `json:"trade_status"`
+	PaidAt      *time.Time `json:"paid_at,omitempty"`
+}
+
+type QueryWithholdAgreementResponse struct {
+	OutRequestNo string     `json:"out_request_no"`
+	AgreementNo  string     `json:"agreement_no"`
+	Status       string     `json:"status"`
+	SignTime     *time.Time `json:"sign_time,omitempty"`
+}
+
+// ==================== 对账 API ====================
+
+// RunReconciliation 执行支付宝对账
+// @Summary 执行支付宝对账
+// @Description 下载指定日期的对账文件并与本地订单比对
+// @Tags 支付宝对账
+// @Produce json
+// @Param bill_date query string true "对账日期 yyyy-MM-dd"
+// @Success 200 {object} Response{data=models.AlipayReconciliationReport}
+// @Failure 400 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/alipay/reconciliation/run [post]
+func (h *AlipayHandler) RunReconciliation(c *gin.Context) {
+	if h.reconciliationService == nil {
+		h.errorResponse(c, 503, "对账服务未配置", nil)
+		return
+	}
+	billDate := c.Query("bill_date")
+	if billDate == "" {
+		h.errorResponse(c, 400, "缺少 bill_date 参数（格式：yyyy-MM-dd）", nil)
+		return
+	}
+	report, err := h.reconciliationService.RunReconciliation(c.Request.Context(), billDate)
+	if err != nil {
+		h.logger.Error("执行对账失败", zap.Error(err), zap.String("bill_date", billDate))
+		h.errorResponse(c, 500, "执行对账失败", err)
+		return
+	}
+	h.successResponse(c, report)
+}
+
+// GetReconciliationReport 获取对账报告详情
+// @Summary 获取对账报告详情
+// @Description 获取对账报告及差异明细
+// @Tags 支付宝对账
+// @Produce json
+// @Param id path int true "报告ID"
+// @Success 200 {object} Response{data=object}
+// @Failure 404 {object} ErrorResponse
+// @Router /api/v1/alipay/reconciliation/reports/{id} [get]
+func (h *AlipayHandler) GetReconciliationReport(c *gin.Context) {
+	if h.reconciliationService == nil {
+		h.errorResponse(c, 503, "对账服务未配置", nil)
+		return
+	}
+	var idParam struct {
+		ID uint `uri:"id" binding:"required"`
+	}
+	if err := c.ShouldBindUri(&idParam); err != nil {
+		h.errorResponse(c, 400, "无效的报告ID", err)
+		return
+	}
+	report, details, err := h.reconciliationService.GetReconciliationReport(c.Request.Context(), idParam.ID)
+	if err != nil {
+		h.errorResponse(c, 404, "对账报告不存在", err)
+		return
+	}
+	h.successResponse(c, gin.H{
+		"report":  report,
+		"details": details,
+	})
+}
+
+// ListReconciliationReports 列出对账报告
+// @Summary 列出对账报告
+// @Description 按日期或最近记录列出对账报告
+// @Tags 支付宝对账
+// @Produce json
+// @Param bill_date query string false "对账日期 yyyy-MM-dd"
+// @Param limit query int false "返回条数，默认20"
+// @Success 200 {object} Response{data=[]models.AlipayReconciliationReport}
+// @Router /api/v1/alipay/reconciliation/reports [get]
+func (h *AlipayHandler) ListReconciliationReports(c *gin.Context) {
+	if h.reconciliationService == nil {
+		h.errorResponse(c, 503, "对账服务未配置", nil)
+		return
+	}
+	billDate := c.Query("bill_date")
+	limit := 20
+	if l := c.Query("limit"); l != "" {
+		if n, err := parseInt(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	reports, err := h.reconciliationService.ListReconciliationReports(c.Request.Context(), billDate, limit)
+	if err != nil {
+		h.logger.Error("列出对账报告失败", zap.Error(err))
+		h.errorResponse(c, 500, "列出对账报告失败", err)
+		return
+	}
+	h.successResponse(c, reports)
+}
+
+func parseInt(s string) (int, error) {
+	return strconv.Atoi(s)
+}
+

@@ -19,6 +19,7 @@ func SetupRoutes(
 	paymentService services.PaymentService,
 	googleService *services.GooglePlayService,
 	alipayService *services.AlipayService,
+	alipayReconciliationService *services.AlipayReconciliationService,
 	appleService *services.AppleService,
 	wechatService *services.WechatService,
 	db *gorm.DB,
@@ -35,7 +36,7 @@ func SetupRoutes(
 	googleWebhookHandler := handlers.NewGoogleWebhookHandler(db, googleService, paymentService, &cfg.Google, logger)
 
 	// 支付宝处理器
-	alipayHandler := handlers.NewAlipayHandler(alipayService, paymentService, logger)
+	alipayHandler := handlers.NewAlipayHandler(alipayService, alipayReconciliationService, paymentService, logger)
 	alipayWebhookHandler := handlers.NewAlipayWebhookHandler(alipayService, logger)
 
 	// Apple处理器
@@ -57,10 +58,11 @@ func SetupRoutes(
 		// ---------- 通用订单路由 ----------
 		orders := v1.Group("/orders")
 		{
-			orders.POST("", commonHandler.CreateOrder)                   // 创建订单
-			orders.GET("/:id", commonHandler.GetOrder)                   // 获取订单详情
-			orders.GET("/no/:order_no", commonHandler.GetOrderByOrderNo) // 根据订单号获取订单
-			orders.POST("/:id/cancel", commonHandler.CancelOrder)        // 取消订单
+			orders.POST("", commonHandler.CreateOrder)                       // 创建订单
+			orders.POST("/cancel-expired", commonHandler.CancelExpiredOrders) // 取消过期订单（供定时任务调用，需在 /:id 前）
+			orders.GET("/:id", commonHandler.GetOrder)                       // 获取订单详情
+			orders.GET("/no/:order_no", commonHandler.GetOrderByOrderNo)     // 根据订单号获取订单
+			orders.POST("/:id/cancel", commonHandler.CancelOrder)            // 取消订单
 		}
 
 		// ---------- 用户相关路由 ----------
@@ -105,6 +107,16 @@ func SetupRoutes(
 			alipay.POST("/subscriptions", alipayHandler.CreateAlipaySubscription)        // 创建周期扣款
 			alipay.GET("/subscriptions/query", alipayHandler.QueryAlipaySubscription)    // 查询周期扣款
 			alipay.POST("/subscriptions/cancel", alipayHandler.CancelAlipaySubscription) // 取消周期扣款
+
+			// 免密支付（商户代扣）
+			alipay.POST("/withhold/agreements", alipayHandler.CreateWithholdAgreement)     // 创建免密签约
+			alipay.GET("/withhold/agreements/query", alipayHandler.QueryWithholdAgreement) // 查询免密签约
+			alipay.POST("/withhold/execute", alipayHandler.ExecuteWithhold)               // 执行单次代扣
+
+			// 对账
+			alipay.POST("/reconciliation/run", alipayHandler.RunReconciliation)           // 执行对账
+			alipay.GET("/reconciliation/reports", alipayHandler.ListReconciliationReports) // 列出对账报告
+			alipay.GET("/reconciliation/reports/:id", alipayHandler.GetReconciliationReport) // 获取对账报告详情
 		}
 
 		// ---------- Apple路由 ----------
@@ -156,8 +168,9 @@ func SetupRoutes(
 
 		// 支付宝 Webhook
 		webhooks.POST("/alipay/notify", alipayWebhookHandler.HandleAlipayNotify)                   // 支付通知
-		webhooks.POST("/alipay/subscription", alipayWebhookHandler.HandleAlipaySubscriptionNotify) // 签约通知
-		webhooks.POST("/alipay/deduct", alipayWebhookHandler.HandleAlipayDeductNotify)             // 扣款通知
+		webhooks.POST("/alipay/subscription", alipayWebhookHandler.HandleAlipaySubscriptionNotify) // 周期扣款签约通知
+		webhooks.POST("/alipay/deduct", alipayWebhookHandler.HandleAlipayDeductNotify)             // 周期扣款扣款通知
+		webhooks.POST("/alipay/withhold", alipayWebhookHandler.HandleAlipayWithholdNotify)         // 免密签约通知
 
 		// Apple Webhook
 		webhooks.POST("/apple", appleWebhookHandler.HandleAppleWebhook)
