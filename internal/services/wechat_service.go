@@ -1,13 +1,25 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"crypto"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +29,8 @@ import (
 	"pay-gateway/internal/config"
 	"pay-gateway/internal/models"
 )
+
+const wechatAPIBaseURL = "https://api.mch.weixin.qq.com"
 
 // WechatService 微信支付服务
 type WechatService struct {
@@ -32,8 +46,21 @@ func NewWechatService(db *gorm.DB, cfg *config.WechatConfig, logger *zap.Logger)
 		return nil, errors.New("微信支付配置不完整")
 	}
 
+	// 获取私钥内容：优先使用 PrivateKey，否则从 PrivateKeyPath 读取
+	privateKeyStr := cfg.PrivateKey
+	if privateKeyStr == "" && cfg.PrivateKeyPath != "" {
+		keyContent, err := os.ReadFile(cfg.PrivateKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("读取微信私钥文件失败: %w", err)
+		}
+		privateKeyStr = string(keyContent)
+	}
+	if privateKeyStr == "" {
+		return nil, errors.New("微信商户私钥未配置（需配置 private_key 或 private_key_path）")
+	}
+
 	// 解析私钥
-	privateKey, err := parseWechatPrivateKey(cfg.PrivateKey)
+	privateKey, err := parseWechatPrivateKey(privateKeyStr)
 	if err != nil {
 		return nil, fmt.Errorf("解析微信私钥失败: %v", err)
 	}
@@ -139,36 +166,40 @@ func (s *WechatService) CreateJSAPIPayment(ctx context.Context, orderNo, openID 
 		return nil, fmt.Errorf("微信支付记录不存在: %v", err)
 	}
 
-	// 构建预支付交易单请求
-	// 注意：实际应用中应该调用微信支付API创建预支付单
-	_ = map[string]interface{}{
-		"appid":        s.config.AppID,
-		"mchid":        s.config.MchID,
-		"description":  order.Title,
-		"out_trade_no": orderNo,
-		"time_expire":  order.ExpiredAt.Format(time.RFC3339),
-		"notify_url":   s.config.NotifyURL,
-		"amount": map[string]interface{}{
-			"total":    order.TotalAmount,
-			"currency": "CNY",
-		},
-		"payer": map[string]interface{}{
-			"openid": openID,
-		},
+	// 调用微信支付 API 创建预支付单
+	timeExpire := ""
+	if order.ExpiredAt != nil {
+		timeExpire = order.ExpiredAt.Format(time.RFC3339)
+	}
+	reqBody := wechatJSAPIReq{
+		AppID:       s.config.AppID,
+		MchID:       s.config.MchID,
+		Description: order.Title,
+		OutTradeNo:  orderNo,
+		TimeExpire:  timeExpire,
+		NotifyURL:   s.config.NotifyURL,
+		Amount:      wechatAmount{Total: order.TotalAmount, Currency: "CNY"},
+		Payer:       wechatPayer{OpenID: openID},
 	}
 
-	// 这里应该调用微信支付API，为了演示，我们模拟生成prepay_id
-	prepayID := fmt.Sprintf("wx%s%s", time.Now().Format("20060102150405"), uuid.New().String()[:8])
+	respBody, _, err := s.wechatAPIRequest(ctx, "POST", "/v3/pay/transactions/jsapi", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("调用微信JSAPI下单失败: %w", err)
+	}
+
+	var prepayResp wechatPrepayResp
+	if err := json.Unmarshal(respBody, &prepayResp); err != nil {
+		return nil, fmt.Errorf("解析微信响应失败: %w", err)
+	}
+	prepayID := prepayResp.PrepayID
+	if prepayID == "" {
+		return nil, fmt.Errorf("微信未返回 prepay_id")
+	}
 
 	// 更新微信支付记录
 	wechatPayment.PrepayID = prepayID
-	if payerJSON, _ := json.Marshal(map[string]string{"openid": openID}); payerJSON != nil {
-		wechatPayment.Payer = models.JSON{"openid": openID}
-	}
-	if amountJSON, _ := json.Marshal(map[string]interface{}{"total": order.TotalAmount, "currency": "CNY"}); amountJSON != nil {
-		wechatPayment.Amount = models.JSON{"total": order.TotalAmount, "currency": "CNY"}
-	}
-
+	wechatPayment.Payer = models.JSON{"openid": openID}
+	wechatPayment.Amount = models.JSON{"total": order.TotalAmount, "currency": "CNY"}
 	if err := s.db.Save(&wechatPayment).Error; err != nil {
 		s.logger.Error("更新微信支付记录失败", zap.Error(err))
 	}
@@ -179,10 +210,15 @@ func (s *WechatService) CreateJSAPIPayment(ctx context.Context, orderNo, openID 
 		zap.String("openid", openID),
 	)
 
-	// 生成小程序调起支付所需参数
+	// 生成小程序/公众号调起支付所需参数
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
 	nonceStr := generateNonceStr()
 	packageStr := fmt.Sprintf("prepay_id=%s", prepayID)
+
+	paySign, err := s.signPayParams(s.config.AppID, timestamp, nonceStr, packageStr)
+	if err != nil {
+		return nil, fmt.Errorf("生成pay_sign失败: %w", err)
+	}
 
 	return &JSAPIPaymentResponse{
 		PrepayID:  prepayID,
@@ -191,6 +227,7 @@ func (s *WechatService) CreateJSAPIPayment(ctx context.Context, orderNo, openID 
 		NonceStr:  nonceStr,
 		Package:   packageStr,
 		SignType:  "RSA",
+		PaySign:   paySign,
 	}, nil
 }
 
@@ -208,11 +245,38 @@ func (s *WechatService) CreateNativePayment(ctx context.Context, orderNo string)
 		return nil, fmt.Errorf("微信支付记录不存在: %v", err)
 	}
 
-	// 生成二维码链接（模拟）
-	codeURL := fmt.Sprintf("weixin://wxpay/bizpayurl?pr=%s", generateCodeURL())
+	// 调用微信支付 API 创建 Native 预支付单
+	timeExpire := ""
+	if order.ExpiredAt != nil {
+		timeExpire = order.ExpiredAt.Format(time.RFC3339)
+	}
+	reqBody := wechatNativeReq{
+		AppID:       s.config.AppID,
+		MchID:       s.config.MchID,
+		Description: order.Title,
+		OutTradeNo:  orderNo,
+		TimeExpire:  timeExpire,
+		NotifyURL:   s.config.NotifyURL,
+		Amount:      wechatAmount{Total: order.TotalAmount, Currency: "CNY"},
+	}
+
+	respBody, _, err := s.wechatAPIRequest(ctx, "POST", "/v3/pay/transactions/native", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("调用微信Native下单失败: %w", err)
+	}
+
+	var prepayResp wechatPrepayResp
+	if err := json.Unmarshal(respBody, &prepayResp); err != nil {
+		return nil, fmt.Errorf("解析微信响应失败: %w", err)
+	}
+	codeURL := prepayResp.CodeURL
+	if codeURL == "" {
+		return nil, fmt.Errorf("微信未返回 code_url")
+	}
 
 	// 更新微信支付记录
 	wechatPayment.CodeURL = codeURL
+	wechatPayment.Amount = models.JSON{"total": order.TotalAmount, "currency": "CNY"}
 	if err := s.db.Save(&wechatPayment).Error; err != nil {
 		s.logger.Error("更新微信支付记录失败", zap.Error(err))
 	}
@@ -241,11 +305,38 @@ func (s *WechatService) CreateAPPPayment(ctx context.Context, orderNo string) (*
 		return nil, fmt.Errorf("微信支付记录不存在: %v", err)
 	}
 
-	// 生成prepay_id（模拟）
-	prepayID := fmt.Sprintf("wx%s%s", time.Now().Format("20060102150405"), uuid.New().String()[:8])
+	// 调用微信支付 API 创建 APP 预支付单
+	timeExpire := ""
+	if order.ExpiredAt != nil {
+		timeExpire = order.ExpiredAt.Format(time.RFC3339)
+	}
+	reqBody := wechatAPPReq{
+		AppID:       s.config.AppID,
+		MchID:       s.config.MchID,
+		Description: order.Title,
+		OutTradeNo:  orderNo,
+		TimeExpire:  timeExpire,
+		NotifyURL:   s.config.NotifyURL,
+		Amount:      wechatAmount{Total: order.TotalAmount, Currency: "CNY"},
+	}
+
+	respBody, _, err := s.wechatAPIRequest(ctx, "POST", "/v3/pay/transactions/app", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("调用微信APP下单失败: %w", err)
+	}
+
+	var prepayResp wechatPrepayResp
+	if err := json.Unmarshal(respBody, &prepayResp); err != nil {
+		return nil, fmt.Errorf("解析微信响应失败: %w", err)
+	}
+	prepayID := prepayResp.PrepayID
+	if prepayID == "" {
+		return nil, fmt.Errorf("微信未返回 prepay_id")
+	}
 
 	// 更新微信支付记录
 	wechatPayment.PrepayID = prepayID
+	wechatPayment.Amount = models.JSON{"total": order.TotalAmount, "currency": "CNY"}
 	if err := s.db.Save(&wechatPayment).Error; err != nil {
 		s.logger.Error("更新微信支付记录失败", zap.Error(err))
 	}
@@ -255,10 +346,15 @@ func (s *WechatService) CreateAPPPayment(ctx context.Context, orderNo string) (*
 		zap.String("prepay_id", prepayID),
 	)
 
-	// 生成APP调起支付所需参数
+	// 生成APP调起支付所需参数（package 固定为 prepay_id=xxx）
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
 	nonceStr := generateNonceStr()
-	packageStr := "Sign=WXPay"
+	packageStr := fmt.Sprintf("prepay_id=%s", prepayID)
+
+	sign, err := s.signPayParams(s.config.AppID, timestamp, nonceStr, packageStr)
+	if err != nil {
+		return nil, fmt.Errorf("生成sign失败: %w", err)
+	}
 
 	return &APPPaymentResponse{
 		PrepayID:  prepayID,
@@ -268,6 +364,7 @@ func (s *WechatService) CreateAPPPayment(ctx context.Context, orderNo string) (*
 		NonceStr:  nonceStr,
 		Package:   packageStr,
 		SignType:  "RSA",
+		Sign:      sign,
 	}, nil
 }
 
@@ -285,11 +382,58 @@ func (s *WechatService) CreateH5Payment(ctx context.Context, orderNo string, sce
 		return nil, fmt.Errorf("微信支付记录不存在: %v", err)
 	}
 
-	// 生成H5支付链接（模拟）
-	h5URL := fmt.Sprintf("https://wx.tenpay.com/cgi-bin/mmpayweb-bin/checkmweb?prepay_id=%s&package=XXX", uuid.New().String())
+	// 构建 scene_info，H5 支付可选传，建议传 payer_client_ip 和 h5_info
+	scene := wechatH5SceneInfo{
+		H5Info: wechatH5Info{Type: "Wap", AppName: "PayGateway"},
+	}
+	if sceneInfo != nil {
+		if ip, ok := sceneInfo["payer_client_ip"].(string); ok && ip != "" {
+			scene.PayerClientIP = ip
+		}
+		if t, ok := sceneInfo["type"].(string); ok && t != "" {
+			scene.H5Info.Type = t
+		}
+		if name, ok := sceneInfo["app_name"].(string); ok && name != "" {
+			scene.H5Info.AppName = name
+		}
+		if url, ok := sceneInfo["app_url"].(string); ok && url != "" {
+			scene.H5Info.AppURL = url
+		}
+	}
+
+	// 调用微信支付 API 创建 H5 预支付单
+	timeExpire := ""
+	if order.ExpiredAt != nil {
+		timeExpire = order.ExpiredAt.Format(time.RFC3339)
+	}
+	reqBody := wechatH5Req{
+		AppID:       s.config.AppID,
+		MchID:       s.config.MchID,
+		Description: order.Title,
+		OutTradeNo:  orderNo,
+		TimeExpire:  timeExpire,
+		NotifyURL:   s.config.NotifyURL,
+		Amount:      wechatAmount{Total: order.TotalAmount, Currency: "CNY"},
+		SceneInfo:   scene,
+	}
+
+	respBody, _, err := s.wechatAPIRequest(ctx, "POST", "/v3/pay/transactions/h5", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("调用微信H5下单失败: %w", err)
+	}
+
+	var prepayResp wechatPrepayResp
+	if err := json.Unmarshal(respBody, &prepayResp); err != nil {
+		return nil, fmt.Errorf("解析微信响应失败: %w", err)
+	}
+	h5URL := prepayResp.H5URL
+	if h5URL == "" {
+		return nil, fmt.Errorf("微信未返回 h5_url")
+	}
 
 	// 更新微信支付记录
 	wechatPayment.H5URL = h5URL
+	wechatPayment.Amount = models.JSON{"total": order.TotalAmount, "currency": "CNY"}
 	if sceneInfo != nil {
 		wechatPayment.SceneInfo = models.JSON(sceneInfo)
 	}
@@ -305,6 +449,309 @@ func (s *WechatService) CreateH5Payment(ctx context.Context, orderNo string, sce
 	return &H5PaymentResponse{
 		H5URL: h5URL,
 	}, nil
+}
+
+// WechatNotifyResource 微信回调加密资源结构
+type WechatNotifyResource struct {
+	Algorithm      string `json:"algorithm"`
+	Ciphertext     string `json:"ciphertext"`
+	Nonce          string `json:"nonce"`
+	AssociatedData string `json:"associated_data"`
+}
+
+// WechatNotifyRequest 微信回调请求结构
+type WechatNotifyRequest struct {
+	ID           string               `json:"id"`
+	CreateTime   string               `json:"create_time"`
+	ResourceType string               `json:"resource_type"`
+	EventType    string               `json:"event_type"`
+	Resource     WechatNotifyResource `json:"resource"`
+}
+
+// VerifyAndDecryptNotify 验签并解密微信回调
+// 返回解密后的业务数据，供 HandleNotify 处理
+func (s *WechatService) VerifyAndDecryptNotify(headers map[string]string, body []byte) (map[string]interface{}, error) {
+	// 1. 验签
+	if s.config.PlatformCertPath != "" {
+		if err := s.verifyWechatSignature(headers, body); err != nil {
+			return nil, fmt.Errorf("验签失败: %w", err)
+		}
+	} else {
+		s.logger.Warn("未配置微信平台证书，跳过回调验签", zap.String("platform_cert_path", s.config.PlatformCertPath))
+	}
+
+	// 2. 解析请求体
+	var req WechatNotifyRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, fmt.Errorf("解析回调失败: %w", err)
+	}
+
+	// 3. 解密 resource
+	if req.Resource.Ciphertext == "" {
+		return nil, errors.New("回调无加密内容")
+	}
+
+	plaintext, err := s.decryptWechatResource(req.Resource)
+	if err != nil {
+		return nil, fmt.Errorf("解密失败: %w", err)
+	}
+
+	var decrypted map[string]interface{}
+	if err := json.Unmarshal(plaintext, &decrypted); err != nil {
+		return nil, fmt.Errorf("解析解密内容失败: %w", err)
+	}
+
+	return decrypted, nil
+}
+
+// verifyWechatSignature 验证微信回调签名
+func (s *WechatService) verifyWechatSignature(headers map[string]string, body []byte) error {
+	timestamp := headers["Wechatpay-Timestamp"]
+	nonce := headers["Wechatpay-Nonce"]
+	signatureHeader := headers["Wechatpay-Signature"]
+
+	if timestamp == "" || nonce == "" || signatureHeader == "" {
+		return errors.New("缺少验签必要请求头")
+	}
+
+	// 解析 Wechatpay-Signature: nonce="xxx",timestamp="xxx",signature="xxx",serial="xxx"
+	signature, err := parseWechatpaySignature(signatureHeader)
+	if err != nil {
+		return err
+	}
+
+	// 构建验签串
+	message := fmt.Sprintf("%s\n%s\n%s\n", timestamp, nonce, string(body))
+
+	// 加载平台证书
+	certPEM, err := os.ReadFile(s.config.PlatformCertPath)
+	if err != nil {
+		return fmt.Errorf("读取平台证书失败: %w", err)
+	}
+
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return errors.New("解析平台证书失败")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("解析证书失败: %w", err)
+	}
+
+	pubKey, ok := cert.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return errors.New("平台证书非RSA公钥")
+	}
+
+	// 验签：SHA256WithRSA
+	signatureBytes, err := base64.StdEncoding.DecodeString(signature)
+	if err != nil {
+		return fmt.Errorf("解码签名失败: %w", err)
+	}
+
+	hashed := sha256.Sum256([]byte(message))
+	if err := rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hashed[:], signatureBytes); err != nil {
+		return fmt.Errorf("签名验证失败: %w", err)
+	}
+
+	return nil
+}
+
+func parseWechatpaySignature(header string) (string, error) {
+	re := regexp.MustCompile(`signature="([^"]+)"`)
+	matches := re.FindStringSubmatch(header)
+	if len(matches) < 2 {
+		return "", errors.New("无法解析 Wechatpay-Signature")
+	}
+	return strings.TrimSpace(matches[1]), nil
+}
+
+// buildWechatAuthHeader 构建微信支付 API v3 请求签名头
+// 签名串格式：HTTP方法\nURL路径\n时间戳\n随机串\n请求体\n
+// 使用商户私钥 RSA-SHA256 签名后 Base64 编码
+func (s *WechatService) buildWechatAuthHeader(method, urlPath, body string) (string, error) {
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	nonceStr := generateNonceStr()
+
+	// 构造待签名字符串
+	signStr := method + "\n" + urlPath + "\n" + timestamp + "\n" + nonceStr + "\n" + body + "\n"
+
+	// RSA-SHA256 签名
+	hashed := sha256.Sum256([]byte(signStr))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, s.privateKey, crypto.SHA256, hashed[:])
+	if err != nil {
+		return "", fmt.Errorf("签名失败: %w", err)
+	}
+	signatureBase64 := base64.StdEncoding.EncodeToString(signature)
+
+	// Authorization: WECHATPAY2-SHA256-RSA2048 mchid="xxx",nonce_str="xxx",signature="xxx",timestamp="xxx",serial_no="xxx"
+	auth := fmt.Sprintf(`WECHATPAY2-SHA256-RSA2048 mchid="%s",nonce_str="%s",signature="%s",timestamp="%s",serial_no="%s"`,
+		s.config.MchID, nonceStr, signatureBase64, timestamp, s.config.SerialNo)
+	return auth, nil
+}
+
+// signPayParams 对调起支付参数签名（用于 JSAPI/APP 的 pay_sign/sign）
+// 待签名字符串：appId\ntimeStamp\nnonceStr\npackage\n\n
+func (s *WechatService) signPayParams(appID, timestamp, nonceStr, packageStr string) (string, error) {
+	signStr := appID + "\n" + timestamp + "\n" + nonceStr + "\n" + packageStr + "\n\n"
+	hashed := sha256.Sum256([]byte(signStr))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, s.privateKey, crypto.SHA256, hashed[:])
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(signature), nil
+}
+
+// wechatAPIRequest 发起带签名的微信支付 API 请求
+func (s *WechatService) wechatAPIRequest(ctx context.Context, method, urlPath string, reqBody interface{}) ([]byte, int, error) {
+	var bodyBytes []byte
+	if reqBody != nil {
+		var err error
+		bodyBytes, err = json.Marshal(reqBody)
+		if err != nil {
+			return nil, 0, fmt.Errorf("序列化请求体失败: %w", err)
+		}
+	}
+	bodyStr := string(bodyBytes)
+
+	auth, err := s.buildWechatAuthHeader(method, urlPath, bodyStr)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	url := wechatAPIBaseURL + urlPath
+	var req *http.Request
+	if len(bodyBytes) > 0 {
+		req, err = http.NewRequestWithContext(ctx, method, url, bytes.NewReader(bodyBytes))
+	} else {
+		req, err = http.NewRequestWithContext(ctx, method, url, nil)
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", auth)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("请求微信API失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		s.logger.Error("微信API请求失败",
+			zap.Int("status", resp.StatusCode),
+			zap.String("url", url),
+			zap.String("response", string(respBody)),
+		)
+		return respBody, resp.StatusCode, fmt.Errorf("微信API返回错误: status=%d, body=%s", resp.StatusCode, string(respBody))
+	}
+
+	return respBody, resp.StatusCode, nil
+}
+
+// 微信支付 API 请求/响应结构
+type wechatJSAPIReq struct {
+	AppID       string         `json:"appid"`
+	MchID       string         `json:"mchid"`
+	Description string         `json:"description"`
+	OutTradeNo  string         `json:"out_trade_no"`
+	TimeExpire  string         `json:"time_expire,omitempty"`
+	NotifyURL   string         `json:"notify_url"`
+	Amount      wechatAmount   `json:"amount"`
+	Payer       wechatPayer    `json:"payer"`
+}
+type wechatNativeReq struct {
+	AppID       string       `json:"appid"`
+	MchID       string       `json:"mchid"`
+	Description string       `json:"description"`
+	OutTradeNo  string       `json:"out_trade_no"`
+	TimeExpire  string       `json:"time_expire,omitempty"`
+	NotifyURL   string       `json:"notify_url"`
+	Amount      wechatAmount `json:"amount"`
+}
+type wechatAPPReq struct {
+	AppID       string       `json:"appid"`
+	MchID       string       `json:"mchid"`
+	Description string       `json:"description"`
+	OutTradeNo  string       `json:"out_trade_no"`
+	TimeExpire  string       `json:"time_expire,omitempty"`
+	NotifyURL   string       `json:"notify_url"`
+	Amount      wechatAmount `json:"amount"`
+}
+type wechatH5Req struct {
+	AppID       string              `json:"appid"`
+	MchID       string              `json:"mchid"`
+	Description string              `json:"description"`
+	OutTradeNo  string              `json:"out_trade_no"`
+	TimeExpire  string              `json:"time_expire,omitempty"`
+	NotifyURL   string              `json:"notify_url"`
+	Amount      wechatAmount        `json:"amount"`
+	SceneInfo   wechatH5SceneInfo    `json:"scene_info"`
+}
+type wechatAmount struct {
+	Total    int64  `json:"total"`
+	Currency string `json:"currency"`
+}
+type wechatPayer struct {
+	OpenID string `json:"openid"`
+}
+type wechatH5SceneInfo struct {
+	PayerClientIP string       `json:"payer_client_ip,omitempty"`
+	DeviceID      string       `json:"device_id,omitempty"`
+	H5Info        wechatH5Info `json:"h5_info"`
+}
+type wechatH5Info struct {
+	Type    string `json:"type"` // "Wap" 或 "iOS"/"Android"
+	AppName string `json:"app_name,omitempty"`
+	AppURL  string `json:"app_url,omitempty"`
+}
+type wechatPrepayResp struct {
+	PrepayID string `json:"prepay_id"`
+	CodeURL  string `json:"code_url"`
+	H5URL    string `json:"h5_url"`
+}
+
+// decryptWechatResource 使用 API v3 密钥解密回调资源
+func (s *WechatService) decryptWechatResource(res WechatNotifyResource) ([]byte, error) {
+	if s.config.APIv3Key == "" || len(s.config.APIv3Key) != 32 {
+		return nil, errors.New("API v3 密钥未配置或长度非32位")
+	}
+
+	key := []byte(s.config.APIv3Key)
+	ciphertext, err := base64.StdEncoding.DecodeString(res.Ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("解码密文失败: %w", err)
+	}
+
+	nonce := []byte(res.Nonce)
+	associatedData := []byte(res.AssociatedData)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	aesgcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, associatedData)
+	if err != nil {
+		return nil, fmt.Errorf("AES-GCM 解密失败: %w", err)
+	}
+
+	return plaintext, nil
 }
 
 // HandleNotify 处理微信支付异步通知

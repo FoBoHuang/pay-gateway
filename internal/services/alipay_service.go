@@ -44,7 +44,7 @@ func NewAlipayService(db *gorm.DB, cfg *config.AlipayConfig, redis *cache.Redis)
 		return nil, fmt.Errorf("创建支付宝客户端失败: %v", err)
 	}
 
-	// 加载证书（证书模式）
+	// 加载验签密钥：证书模式与公钥模式二选一（回调验签必需）
 	if cfg.CertMode {
 		if err := client.LoadAppCertPublicKeyFromFile(cfg.AppCertPath); err != nil {
 			return nil, fmt.Errorf("加载应用公钥证书失败: %v", err)
@@ -54,6 +54,13 @@ func NewAlipayService(db *gorm.DB, cfg *config.AlipayConfig, redis *cache.Redis)
 		}
 		if err := client.LoadAlipayCertPublicKeyFromFile(cfg.AlipayCertPath); err != nil {
 			return nil, fmt.Errorf("加载支付宝公钥证书失败: %v", err)
+		}
+	} else {
+		if cfg.AlipayPublicKey == "" {
+			return nil, errors.New("公钥模式(cert_mode=false)下需配置 alipay_public_key 以验签回调")
+		}
+		if err := client.LoadAliPayPublicKey(cfg.AlipayPublicKey); err != nil {
+			return nil, fmt.Errorf("加载支付宝公钥失败: %v", err)
 		}
 	}
 

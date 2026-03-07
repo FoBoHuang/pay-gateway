@@ -80,9 +80,10 @@ type AlipayConfig struct {
 	WithholdNotifyURL        string `toml:"withhold_notify_url"` // 免密签约异步通知URL（可选，为空时从 NotifyURL 派生）
 	ReturnURL                string // 同步返回URL
 	CertMode                 bool   // 是否使用证书模式
-	AppCertPath              string // 应用公钥证书路径
-	RootCertPath             string // 支付宝根证书路径
-	AlipayCertPath           string // 支付宝公钥证书路径
+	AlipayPublicKey          string `toml:"alipay_public_key"` // 支付宝公钥（公钥模式验签用，cert_mode=false 时必填）
+	AppCertPath              string // 应用公钥证书路径（证书模式）
+	RootCertPath             string // 支付宝根证书路径（证书模式）
+	AlipayCertPath           string // 支付宝公钥证书路径（证书模式）
 	ReconciliationCronEnable bool   `toml:"reconciliation_cron_enable"` // 是否启用每日对账定时任务
 	ReconciliationCronTime   string `toml:"reconciliation_cron_time"`   // 对账执行时间，如 "02:00" 表示凌晨2点
 }
@@ -100,14 +101,15 @@ type AppleConfig struct {
 
 // WechatConfig 微信支付配置
 type WechatConfig struct {
-	AppID          string // 微信应用ID（公众号/小程序/APP）
-	MchID          string // 微信商户号
-	APIv3Key       string // API v3密钥
-	SerialNo       string // 证书序列号
-	PrivateKey     string // 商户私钥内容
-	PrivateKeyPath string // 商户私钥文件路径
-	NotifyURL      string // 异步通知URL
-	CertPath       string // 商户证书路径（可选）
+	AppID             string // 微信应用ID（公众号/小程序/APP）
+	MchID             string // 微信商户号
+	APIv3Key          string // API v3密钥
+	SerialNo          string // 证书序列号
+	PrivateKey        string // 商户私钥内容
+	PrivateKeyPath    string // 商户私钥文件路径
+	NotifyURL         string // 异步通知URL
+	CertPath          string // 商户证书路径（可选，用于请求签名）
+	PlatformCertPath  string // 微信平台证书路径（用于验签回调，可从商户平台下载）
 }
 
 // Load 从配置文件加载配置，支持环境变量覆盖
@@ -192,15 +194,19 @@ func loadDefaults() *Config {
 			ExpireTime: 24 * time.Hour,
 		},
 		Alipay: AlipayConfig{
-			AppID:          "",
-			PrivateKey:     "",
-			IsProduction:   false,
-			NotifyURL:      "https://your-domain.com/api/alipay/notify",
-			ReturnURL:      "https://your-domain.com/payment/return",
-			CertMode:       false,
-			AppCertPath:    "certs/appCertPublicKey.crt",
-			RootCertPath:   "certs/alipayRootCert.crt",
-			AlipayCertPath: "certs/alipayCertPublicKey_RSA2.crt",
+			AppID:                    "",
+			PrivateKey:               "",
+			IsProduction:             false,
+			NotifyURL:                "https://your-domain.com/api/alipay/notify",
+			WithholdNotifyURL:        "",
+			ReturnURL:                "https://your-domain.com/payment/return",
+			CertMode:                 false,
+			AlipayPublicKey:          "",
+			AppCertPath:              "certs/appCertPublicKey.crt",
+			RootCertPath:             "certs/alipayRootCert.crt",
+			AlipayCertPath:           "certs/alipayCertPublicKey_RSA2.crt",
+			ReconciliationCronEnable: false,
+			ReconciliationCronTime:   "02:00",
 		},
 		Apple: AppleConfig{
 			KeyID:          "",
@@ -212,14 +218,15 @@ func loadDefaults() *Config {
 			WebhookSecret:  "",
 		},
 		Wechat: WechatConfig{
-			AppID:          "",
-			MchID:          "",
-			APIv3Key:       "",
-			SerialNo:       "",
-			PrivateKey:     "",
-			PrivateKeyPath: "",
-			NotifyURL:      "https://your-domain.com/api/wechat/notify",
-			CertPath:       "",
+			AppID:            "",
+			MchID:            "",
+			APIv3Key:         "",
+			SerialNo:         "",
+			PrivateKey:       "",
+			PrivateKeyPath:   "",
+			NotifyURL:        "https://your-domain.com/api/wechat/notify",
+			CertPath:         "",
+			PlatformCertPath: "",
 		},
 	}
 }
@@ -333,6 +340,9 @@ func (c *Config) applyEnvOverrides() {
 	if certMode := os.Getenv("ALIPAY_CERT_MODE"); certMode != "" {
 		c.Alipay.CertMode = certMode == "true"
 	}
+	if alipayPublicKey := os.Getenv("ALIPAY_PUBLIC_KEY"); alipayPublicKey != "" {
+		c.Alipay.AlipayPublicKey = alipayPublicKey
+	}
 	if appCertPath := os.Getenv("ALIPAY_APP_CERT_PATH"); appCertPath != "" {
 		c.Alipay.AppCertPath = appCertPath
 	}
@@ -390,6 +400,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if certPath := os.Getenv("WECHAT_CERT_PATH"); certPath != "" {
 		c.Wechat.CertPath = certPath
+	}
+	if platformCertPath := os.Getenv("WECHAT_PLATFORM_CERT_PATH"); platformCertPath != "" {
+		c.Wechat.PlatformCertPath = platformCertPath
 	}
 }
 

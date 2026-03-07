@@ -1,25 +1,22 @@
 # 支付网关配置文件示例
-# 复制此文件为 config.toml 并根据需要进行修改
+# 复制此文件为 config.toml 并填写实际配置
 
-# 服务器配置
 [server]
 port = "8080"
-mode = "release"          # debug/release
+mode = "release"  # debug or release
 read_timeout = "15s"
 write_timeout = "15s"
 
-# 数据库配置
 [database]
 host = "localhost"
 port = "5432"
 user = "postgres"
-password = ""
-db_name = "billing"
-ssl_mode = "disable"
+password = "your_password"
+dbname = "billing"
+sslmode = "disable"
 max_idle_conns = 10
 max_open_conns = 100
 
-# Redis缓存配置
 [redis]
 host = "localhost"
 port = "6379"
@@ -28,35 +25,67 @@ db = 0
 pool_size = 10
 min_idle_conns = 5
 
-# Google Play配置
-[google]
-service_account_file = "service-account.json"
-package_name = "com.example.app"
-webhook_secret = ""
-
-# JWT认证配置
 [jwt]
-secret = "your-secret-key"
+secret = "your_jwt_secret_key_here"
 expire_time = "24h"
+
+# Google Play 配置
+[google]
+service_account_file = "configs/google-service-account.json"
+package_name = "com.example.app"
+webhook_secret = "your_google_webhook_secret"
+
+# 微信支付配置
+[wechat]
+app_id = "wx1234567890abcdef"                    # 微信应用ID
+mch_id = "1234567890"                             # 微信商户号
+apiv3_key = "your_apiv3_key_32_characters_long"  # API v3密钥，32位
+serial_no = "1234567890ABCDEF"                    # 证书序列号
+private_key = """
+-----BEGIN PRIVATE KEY-----
+Your Wechat Private Key Content Here
+-----END PRIVATE KEY-----
+"""
+# 或者使用私钥文件路径
+# private_key_path = "configs/wechat_private_key.pem"
+notify_url = "https://your-domain.com/webhook/wechat/notify"
+cert_path = "configs/wechat_cert.pem"             # 可选，商户证书路径
+platform_cert_path = "configs/wechat_platform_cert.pem"  # 微信平台证书路径，用于验签回调（从商户平台下载）
 
 # 支付宝配置
 [alipay]
-app_id = ""
-private_key = ""
-is_production = false
-notify_url = "https://your-domain.com/api/alipay/notify"
+app_id = "2021001234567890"                      # 支付宝应用ID
+private_key = """
+-----BEGIN RSA PRIVATE KEY-----
+Your Alipay Private Key Content Here
+-----END RSA PRIVATE KEY-----
+"""
+is_production = false                             # 是否为生产环境
+notify_url = "https://your-domain.com/webhook/alipay"
 return_url = "https://your-domain.com/payment/return"
-cert_mode = false
-app_cert_path = "certs/appCertPublicKey.crt"
-root_cert_path = "certs/alipayRootCert.crt"
-alipay_cert_path = "certs/alipayCertPublicKey_RSA2.crt"
+cert_mode = false                                 # 是否使用证书模式（false=公钥模式，true=证书模式）
+# 公钥模式（cert_mode=false）必填：支付宝公钥，用于验签回调
+# alipay_public_key = """
+# -----BEGIN PUBLIC KEY-----
+# MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
+# -----END PUBLIC KEY-----
+# """
+# 证书模式（cert_mode=true）需配置以下三个证书路径
+app_cert_path = "configs/alipay/appCertPublicKey.crt"
+root_cert_path = "configs/alipay/alipayRootCert.crt"
+alipay_cert_path = "configs/alipay/alipayCertPublicKey_RSA2.crt"
 
-# Apple支付配置
+# Apple Store 配置
 [apple]
-key_id = ""                    # Apple私钥ID，从App Store Connect获取
-issuer_id = ""                 # Apple发行者ID，从App Store Connect获取
-bundle_id = "com.example.app"  # iOS应用Bundle ID
-private_key = ""               # Apple私钥内容（.p8文件内容）
-private_key_path = "certs/ApplePrivateKey.p8"  # Apple私钥文件路径（如果私钥内容为空，则从文件读取）
-sandbox = true                 # 是否使用沙盒环境（true: 沙盒，false: 生产）
-webhook_secret = ""            # Apple Webhook密钥，用于验证通知
+key_id = "ABC123DEFG"                             # Apple私钥ID
+issuer_id = "12345678-1234-1234-1234-123456789012" # Apple发行者ID
+bundle_id = "com.example.app"                     # iOS应用Bundle ID
+private_key = """
+-----BEGIN PRIVATE KEY-----
+Your Apple Private Key Content Here (.p8 file)
+-----END PRIVATE KEY-----
+"""
+# 或者使用私钥文件路径
+# private_key_path = "configs/apple_private_key.p8"
+sandbox = false                                   # 是否使用沙盒环境
+webhook_secret = "your_apple_webhook_secret"

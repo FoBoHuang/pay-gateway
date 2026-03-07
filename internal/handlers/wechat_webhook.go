@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -36,13 +37,32 @@ func NewWechatWebhookHandler(
 // @Failure 400 {object} map[string]string
 // @Router /webhook/wechat/notify [post]
 func (h *WechatWebhookHandler) HandleWechatNotify(c *gin.Context) {
-	// 读取请求体
-	var notifyData map[string]interface{}
-	if err := c.ShouldBindJSON(&notifyData); err != nil {
-		h.logger.Error("解析微信通知数据失败", zap.Error(err))
+	// 必须读取原始 body，验签和解密都需要
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		h.logger.Error("读取微信通知请求体失败", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    "FAIL",
-			"message": "解析数据失败",
+			"message": "读取请求失败",
+		})
+		return
+	}
+
+	// 构建请求头 map（用于验签）
+	headers := map[string]string{
+		"Wechatpay-Timestamp": c.GetHeader("Wechatpay-Timestamp"),
+		"Wechatpay-Nonce":     c.GetHeader("Wechatpay-Nonce"),
+		"Wechatpay-Signature": c.GetHeader("Wechatpay-Signature"),
+		"Wechatpay-Serial":    c.GetHeader("Wechatpay-Serial"),
+	}
+
+	// 验签并解密
+	notifyData, err := h.wechatService.VerifyAndDecryptNotify(headers, body)
+	if err != nil {
+		h.logger.Error("微信通知验签或解密失败", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    "FAIL",
+			"message": "验签或解密失败",
 		})
 		return
 	}
@@ -51,11 +71,8 @@ func (h *WechatWebhookHandler) HandleWechatNotify(c *gin.Context) {
 		zap.Any("out_trade_no", notifyData["out_trade_no"]),
 		zap.Any("trade_state", notifyData["trade_state"]))
 
-	// TODO: 实现签名验证逻辑
-	// 验证签名（实际应用中需要验证微信签名）
-
 	// 处理通知
-	err := h.wechatService.HandleNotify(c.Request.Context(), notifyData)
+	err = h.wechatService.HandleNotify(c.Request.Context(), notifyData)
 	if err != nil {
 		h.logger.Error("处理微信通知失败", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{

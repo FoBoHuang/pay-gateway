@@ -6,21 +6,24 @@
 
 - [功能概述](#功能概述)
 - [配置](#配置)
+- [密钥机制说明](#密钥机制说明)
+- [双向签名校验](#双向签名校验)
 - [支付流程](#支付流程)
 - [API 接口](#api-接口)
 - [Webhook 处理](#webhook-处理)
+- [回调处理流程与防篡改机制](#回调处理流程与防篡改机制)
 - [最佳实践](#最佳实践)
 
 ## 功能概述
 
 | 功能 | 说明 | 状态 |
 |-----|------|-----|
-| JSAPI 支付 | 小程序/公众号支付 | ✅ |
-| Native 支付 | 扫码支付 | ✅ |
-| APP 支付 | 原生 App 支付 | ✅ |
-| H5 支付 | 手机浏览器支付 | ✅ |
+| JSAPI 支付 | 小程序/公众号支付 | ✅ 真实 API |
+| Native 支付 | 扫码支付 | ✅ 真实 API |
+| APP 支付 | 原生 App 支付 | ✅ 真实 API |
+| H5 支付 | 手机浏览器支付 | ✅ 真实 API |
 | 退款 | 原路退回 | ✅ |
-| 异步通知 | 支付/退款结果通知 | ✅ |
+| 异步通知 | 支付/退款结果通知 | ✅ 验签+解密 |
 
 ## 配置
 
@@ -47,16 +50,69 @@ api_v3_key = "your-api-v3-key-32-chars-long"
 # 证书序列号
 serial_no = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 
-# 商户私钥
+# 商户私钥（二选一：内容或文件路径）
 private_key = '''
 -----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...
 -----END PRIVATE KEY-----
 '''
+# 或使用私钥文件路径（当 private_key 为空时从文件读取）
+# private_key_path = "configs/wechat_private_key.pem"
 
 # 回调地址
 notify_url = "https://your-domain.com/webhook/wechat/notify"
+
+# 微信平台证书路径（用于验签回调，从商户平台或 /v3/certificates 接口下载）
+platform_cert_path = "configs/wechat_platform_cert.pem"
 ```
+
+### 3. 密钥机制说明
+
+微信支付 API v3 采用**混合密钥机制**，与支付宝 RSA2 不同：
+
+| 密钥类型 | 加密方式 | 来源 | 用途 |
+|----------|----------|------|------|
+| **API v3 密钥** | 对称加密 | 商户在微信商户平台**设置**（32 位） | 解密回调通知内容（AEAD_AES_256_GCM） |
+| **商户私钥** | 非对称加密 (RSA) | 商户**自己生成** | 签名请求、调用微信 API |
+| **微信平台证书** | 非对称加密 (RSA) | 微信提供 | 验签回调请求 |
+
+#### 与支付宝 RSA2 的区别
+
+| 对比项 | 支付宝 RSA2 | 微信 API v3 |
+|--------|-------------|-------------|
+| **签名** | 商户 RSA 私钥签名 | 商户 RSA 私钥签名（相同） |
+| **验签** | 支付宝公钥验签 | 微信平台证书公钥验签（相同） |
+| **通知内容** | 明文 + 签名 | **加密**（AES-256-GCM）+ 签名 |
+| **API v3 密钥** | 无 | **对称密钥**，用于解密通知，在商户平台设置 |
+
+#### API v3 密钥说明
+
+- **32 个字符**，支持数字和大小写字母
+- **由商户在微信商户平台设置**，非本地生成
+- **仅用于解密回调**中的 `resource.ciphertext`（AEAD_AES_256_GCM 算法）
+- **不参与**商户发往微信的 API 请求签名（请求签名使用商户私钥）
+- 与支付宝「商户自己生成密钥对」不同，此密钥为商户与微信**共享**
+
+#### 商户私钥说明
+
+- **由商户自己生成**，与支付宝相同
+- RSA 私钥，用于：
+  1. **签名 API 请求**：调用微信支付接口时，请求头带 `Authorization: WECHATPAY2-SHA256-RSA2048` 签名
+  2. **签名调起支付参数**：JSAPI/APP 的 `pay_sign`/`sign` 由服务端用商户私钥计算后返回给客户端
+- 公钥通过商户证书上传至微信
+
+#### 双向签名校验
+
+微信支付与支付宝一样，对**请求和回调**均进行签名校验：
+
+| 方向 | 谁签名 | 谁验签 | 说明 |
+|------|--------|--------|------|
+| **商户 → 微信** | 商户私钥 | 微信用商户证书公钥 | 商户调用 API 时，请求头带 `Authorization: WECHATPAY2-SHA256-RSA2048` 签名 |
+| **微信 → 商户** | 微信私钥 | 商户用微信平台证书公钥 | 回调通知请求头带 `Wechatpay-Signature`，商户验签 |
+
+商户请求签名覆盖：HTTP 方法、URL、时间戳、随机串、请求体等，微信用商户证书验签，确保请求来自该商户且未被篡改。
+
+**本实现**：JSAPI/Native/APP/H5 下单均已接入真实微信支付 API，请求自动携带 `Authorization: WECHATPAY2-SHA256-RSA2048` 签名；JSAPI/APP 的 `pay_sign`/`sign` 由服务端用商户私钥计算后返回，客户端无需本地签名。
 
 ## 支付流程
 
@@ -80,14 +136,14 @@ notify_url = "https://your-domain.com/webhook/wechat/notify"
       │ ─────────────────────> │                            │
       │  POST /wechat/payments/jsapi/{order_no}             │
       │  {openid}               │                            │
-      │                         │  调用统一下单接口          │
+      │                         │  商户私钥签名，调用微信 API │
       │                         │ ─────────────────────────> │
       │                         │                            │
       │                         │  返回 prepay_id           │
       │                         │ <───────────────────────── │
       │  返回调起支付参数        │                            │
       │ <───────────────────── │                            │
-      │  {appId, timeStamp, nonceStr, package, signType}    │
+      │  {appId, timeStamp, nonceStr, package, signType, paySign} │
       │                         │                            │
       │  3. 调起微信支付         │                            │
       │ ─────────────────────────────────────────────────> │
@@ -125,7 +181,7 @@ notify_url = "https://your-domain.com/webhook/wechat/notify"
       │  2. 创建 Native 支付    │                            │
       │ ─────────────────────> │                            │
       │  POST /wechat/payments/native/{order_no}            │
-      │                         │  调用下单接口              │
+      │                         │  商户私钥签名，调用微信 API │
       │                         │ ─────────────────────────> │
       │                         │  返回 code_url            │
       │                         │ <───────────────────────── │
@@ -206,10 +262,13 @@ Content-Type: application/json
     "time_stamp": "1704067200",
     "nonce_str": "a1b2c3d4e5f6g7h8",
     "package": "prepay_id=wx20240101120000xxxxx",
-    "sign_type": "RSA"
+    "sign_type": "RSA",
+    "pay_sign": "Base64编码的RSA签名，服务端已用商户私钥计算"
   }
 }
 ```
+
+> `pay_sign` 由服务端计算，客户端可直接传给 `wx.requestPayment`，无需本地签名。
 
 ### Native 支付
 
@@ -245,11 +304,14 @@ POST /api/v1/wechat/payments/app/WX20240101120000abcd1234
     "app_id": "wx1234567890abcdef",
     "time_stamp": "1704067200",
     "nonce_str": "a1b2c3d4e5f6g7h8",
-    "package": "Sign=WXPay",
-    "sign_type": "RSA"
+    "package": "prepay_id=wx20240101120000xxxxx",
+    "sign_type": "RSA",
+    "sign": "Base64编码的RSA签名，服务端已用商户私钥计算"
   }
 }
 ```
+
+> `sign` 由服务端计算，APP 端可直接用于调起微信支付 SDK。
 
 ### H5 支付
 
@@ -260,11 +322,9 @@ Content-Type: application/json
 {
   "scene_info": {
     "payer_client_ip": "14.23.150.211",
-    "h5_info": {
-      "type": "Wap",
-      "wap_url": "https://example.com",
-      "wap_name": "Example"
-    }
+    "type": "Wap",
+    "app_name": "Example",
+    "app_url": "https://example.com"
   }
 }
 ```
@@ -374,6 +434,78 @@ Content-Type: application/json
 
 ```
 POST /webhook/wechat/refund
+```
+
+### 回调处理流程与防篡改机制
+
+微信回调通知内容经过加密，防篡改依赖**两层机制**。
+
+#### 处理流程（必须按顺序执行）
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        微信回调处理流程                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  1. 验签                    2. 解密                    3. 业务处理
+  ┌─────────────┐           ┌─────────────┐           ┌─────────────┐
+  │ 校验请求头   │   通过    │ 用 API v3   │   成功    │ 更新订单    │
+  │ Signature   │ ───────> │ 密钥解密    │ ───────> │ 返回成功    │
+  │ 微信平台公钥 │           │ ciphertext  │           │             │
+  └─────────────┘           └─────────────┘           └─────────────┘
+        │                          │
+        │ 失败：拒绝请求             │ 失败：密文被篡改
+        ▼                          ▼
+  ┌─────────────┐           ┌─────────────┐
+  │ 直接返回    │           │ 解密失败    │
+  │ 不处理      │           │ 拒绝请求    │
+  └─────────────┘           └─────────────┘
+```
+
+| 步骤 | 操作 | 失败处理 |
+|------|------|----------|
+| 1. 验签 | 用微信平台证书公钥验证 `Wechatpay-Signature` | 拒绝请求，不解密 |
+| 2. 解密 | 用 API v3 密钥解密 `resource.ciphertext` | 解密失败说明密文被篡改，拒绝 |
+| 3. 业务处理 | 解析明文，更新订单，幂等校验 | 返回 `success` 或 `fail` |
+
+#### 防篡改机制
+
+**机制一：AEAD_AES_256_GCM 认证加密**
+
+| 特性 | 说明 |
+|------|------|
+| **AEAD** | Authenticated Encryption with Associated Data，认证加密 |
+| **认证标签** | 密文附带认证标签，解密时自动校验完整性 |
+| **防篡改** | 密文被篡改 → 解密失败，无法得到明文 |
+
+**机制二：请求头签名验证**
+
+```
+Wechatpay-Timestamp: 时间戳
+Wechatpay-Nonce: 随机串
+Wechatpay-Signature: 微信用私钥对 body 的签名
+```
+
+- 验签字符串：`timestamp + "\n" + nonce + "\n" + body + "\n"`
+- 使用**微信平台证书公钥**验证签名
+- 攻击者无法伪造有效签名（无微信私钥）
+
+**双重保障示意：**
+
+```
+  请求体 (body)                          请求头
+  ┌─────────────────────┐               ┌─────────────────────┐
+  │ resource:           │               │ Wechatpay-Signature │
+  │  ciphertext (加密)   │  ──验签──>   │ Wechatpay-Timestamp │
+  │  nonce              │               │ Wechatpay-Nonce     │
+  │  associated_data    │               └─────────────────────┘
+  └─────────────────────┘                        │
+           │                                     │ 用微信平台公钥
+           │ 解密时校验认证标签                    │ 验证签名
+           ▼                                     ▼
+  ┌─────────────────────┐               ┌─────────────────────┐
+  │ 密文被篡改→解密失败   │               │ 签名无效→拒绝请求    │
+  └─────────────────────┘               └─────────────────────┘
 ```
 
 ## 最佳实践

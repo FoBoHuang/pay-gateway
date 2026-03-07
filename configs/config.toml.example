@@ -50,6 +50,7 @@ Your Wechat Private Key Content Here
 # private_key_path = "configs/wechat_private_key.pem"
 notify_url = "https://your-domain.com/webhook/wechat/notify"
 cert_path = "configs/wechat_cert.pem"             # 可选，商户证书路径
+platform_cert_path = "configs/wechat_platform_cert.pem"  # 微信平台证书路径，用于验签回调（从商户平台下载）
 
 # 支付宝配置
 [alipay]
@@ -63,7 +64,14 @@ is_production = false                             # 是否为生产环境
 notify_url = "https://your-domain.com/webhook/alipay/notify"
 withhold_notify_url = "https://your-domain.com/webhook/alipay/withhold"  # 免密签约通知（可选，为空时从 notify_url 派生）
 return_url = "https://your-domain.com/payment/return"
-cert_mode = false                                 # 是否使用证书模式
+cert_mode = false                                 # 是否使用证书模式（false=公钥模式，true=证书模式）
+# 公钥模式（cert_mode=false）必填：支付宝公钥，用于验签回调
+# alipay_public_key = """
+# -----BEGIN PUBLIC KEY-----
+# MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
+# -----END PUBLIC KEY-----
+# """
+# 证书模式（cert_mode=true）需配置以下三个证书路径
 app_cert_path = "configs/alipay/appCertPublicKey.crt"
 root_cert_path = "configs/alipay/alipayRootCert.crt"
 alipay_cert_path = "configs/alipay/alipayCertPublicKey_RSA2.crt"
