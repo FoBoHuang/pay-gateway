@@ -721,6 +721,43 @@ type wechatPrepayResp struct {
 	H5URL    string `json:"h5_url"`
 }
 
+// 微信退款 API 请求/响应
+type wechatRefundReq struct {
+	OutTradeNo  string            `json:"out_trade_no"`
+	OutRefundNo string            `json:"out_refund_no"`
+	Reason      string            `json:"reason,omitempty"`
+	Amount      wechatRefundAmount `json:"amount"`
+	NotifyURL   string            `json:"notify_url,omitempty"`
+}
+type wechatRefundReqWithTx struct {
+	TransactionID string             `json:"transaction_id"`
+	OutRefundNo   string             `json:"out_refund_no"`
+	Reason        string             `json:"reason,omitempty"`
+	Amount        wechatRefundAmount  `json:"amount"`
+	NotifyURL     string             `json:"notify_url,omitempty"`
+}
+type wechatRefundAmount struct {
+	Refund   int64  `json:"refund"`
+	Total    int64  `json:"total"`
+	Currency string `json:"currency"`
+}
+type wechatRefundResp struct {
+	RefundID            string               `json:"refund_id"`
+	OutRefundNo         string               `json:"out_refund_no"`
+	TransactionID       string               `json:"transaction_id"`
+	OutTradeNo          string               `json:"out_trade_no"`
+	Channel             string               `json:"channel"`
+	UserReceivedAccount string               `json:"user_received_account"`
+	CreateTime          string               `json:"create_time"`
+	Amount              wechatRefundRespAmt  `json:"amount"`
+	Status              string               `json:"status"` // SUCCESS, CLOSED, PROCESSING, ABNORMAL
+}
+type wechatRefundRespAmt struct {
+	Total    int64  `json:"total"`
+	Refund   int64  `json:"refund"`
+	Currency string `json:"currency"`
+}
+
 // decryptWechatResource 使用 API v3 密钥解密回调资源
 func (s *WechatService) decryptWechatResource(res WechatNotifyResource) ([]byte, error) {
 	if s.config.APIv3Key == "" || len(s.config.APIv3Key) != 32 {
@@ -915,65 +952,123 @@ func (s *WechatService) Refund(ctx context.Context, req *WechatRefundRequest) (*
 		return nil, fmt.Errorf("微信支付记录不存在: %v", err)
 	}
 
-	// 生成退款单号
-	outRefundNo := generateWechatRefundNo(req.OrderNo)
-	refundID := fmt.Sprintf("wx%s%s", time.Now().Format("20060102150405"), uuid.New().String()[:8])
+	// 校验退款金额
+	if req.RefundAmount <= 0 || req.RefundAmount > order.TotalAmount {
+		return nil, fmt.Errorf("退款金额无效: 需大于0且不超过订单金额%d", order.TotalAmount)
+	}
 
-	// 开启事务
+	// 生成商户退款单号
+	outRefundNo := generateWechatRefundNo(req.OrderNo)
+
+	// 构建退款请求体
+	amount := wechatRefundAmount{
+		Refund:   req.RefundAmount,
+		Total:    order.TotalAmount,
+		Currency: "CNY",
+	}
+
+	var reqBody interface{}
+	if wechatPayment.TransactionID != "" {
+		reqBody = wechatRefundReqWithTx{
+			TransactionID: wechatPayment.TransactionID,
+			OutRefundNo:   outRefundNo,
+			Reason:        req.RefundReason,
+			Amount:        amount,
+			NotifyURL:     s.config.NotifyURL, // 退款结果通知，可与支付共用
+		}
+	} else {
+		reqBody = wechatRefundReq{
+			OutTradeNo:  req.OrderNo,
+			OutRefundNo: outRefundNo,
+			Reason:      req.RefundReason,
+			Amount:      amount,
+			NotifyURL:   s.config.NotifyURL,
+		}
+	}
+
+	// 调用微信退款 API
+	respBody, _, err := s.wechatAPIRequest(ctx, "POST", "/v3/refund/domestic/refunds", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("调用微信退款API失败: %w", err)
+	}
+
+	var refundResp wechatRefundResp
+	if err := json.Unmarshal(respBody, &refundResp); err != nil {
+		return nil, fmt.Errorf("解析微信退款响应失败: %w", err)
+	}
+
+	// 解析退款成功时间
+	var successTime *time.Time
+	if refundResp.CreateTime != "" {
+		if t, err := time.Parse(time.RFC3339, refundResp.CreateTime); err == nil {
+			successTime = &t
+		}
+	}
+	if refundResp.Status == "SUCCESS" && successTime == nil {
+		now := time.Now()
+		successTime = &now
+	}
+
+	// 开启事务，更新本地记录
 	tx := s.db.Begin()
 
-	// 创建退款记录
 	refund := &models.WechatRefund{
 		OrderID:         order.ID,
 		WechatPaymentID: wechatPayment.ID,
 		OutRefundNo:     outRefundNo,
-		RefundID:        refundID,
+		RefundID:        refundResp.RefundID,
 		OutTradeNo:      req.OrderNo,
-		TransactionID:   wechatPayment.TransactionID,
+		TransactionID:   refundResp.TransactionID,
 		RefundAmount:    req.RefundAmount,
 		TotalAmount:     order.TotalAmount,
 		Currency:        "CNY",
 		RefundReason:    req.RefundReason,
-		RefundStatus:    "SUCCESS",
+		RefundStatus:    refundResp.Status,
+		SuccessTime:     successTime,
 	}
-
-	now := time.Now()
-	refund.SuccessTime = &now
+	if rawBytes, err := json.Marshal(refundResp); err == nil {
+		var rawMap map[string]interface{}
+		if json.Unmarshal(rawBytes, &rawMap) == nil {
+			refund.RawRefundData = models.JSON(rawMap)
+		}
+	}
 
 	if err := tx.Create(refund).Error; err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("创建退款记录失败: %v", err)
 	}
 
-	// 更新订单状态
-	order.Status = models.OrderStatusRefunded
-	order.RefundAt = &now
-	order.RefundReason = req.RefundReason
-	order.RefundAmount = req.RefundAmount
-
-	if err := tx.Save(&order).Error; err != nil {
-		tx.Rollback()
-		return nil, fmt.Errorf("更新订单状态失败: %v", err)
+	// 退款成功时更新订单状态
+	if refundResp.Status == "SUCCESS" {
+		order.Status = models.OrderStatusRefunded
+		order.RefundAt = successTime
+		order.RefundReason = req.RefundReason
+		order.RefundAmount = req.RefundAmount
+		if err := tx.Save(&order).Error; err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("更新订单状态失败: %v", err)
+		}
 	}
+	// PROCESSING 等状态由退款回调异步更新
 
-	// 提交事务
 	if err := tx.Commit().Error; err != nil {
 		return nil, fmt.Errorf("提交事务失败: %v", err)
 	}
 
-	s.logger.Info("微信退款成功",
+	s.logger.Info("微信退款申请成功",
 		zap.String("out_trade_no", req.OrderNo),
 		zap.String("out_refund_no", outRefundNo),
-		zap.String("refund_id", refundID),
+		zap.String("refund_id", refundResp.RefundID),
+		zap.String("status", refundResp.Status),
 		zap.Int64("refund_amount", req.RefundAmount),
 	)
 
 	return &WechatRefundResponse{
 		OutRefundNo:  outRefundNo,
-		RefundID:     refundID,
+		RefundID:     refundResp.RefundID,
 		RefundAmount: req.RefundAmount,
-		RefundStatus: "SUCCESS",
-		RefundAt:     &now,
+		RefundStatus: refundResp.Status,
+		RefundAt:     successTime,
 	}, nil
 }
 
