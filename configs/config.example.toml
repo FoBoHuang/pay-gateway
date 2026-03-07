@@ -1,4 +1,4 @@
-# 支付网关配置文件示例
+# Pay Gateway 配置文件示例
 # 复制此文件为 config.toml 并填写实际配置
 
 [server]
@@ -61,7 +61,8 @@ Your Alipay Private Key Content Here
 -----END RSA PRIVATE KEY-----
 """
 is_production = false                             # 是否为生产环境
-notify_url = "https://your-domain.com/webhook/alipay"
+notify_url = "https://your-domain.com/webhook/alipay/notify"
+withhold_notify_url = "https://your-domain.com/webhook/alipay/withhold"  # 免密签约通知（可选，为空时从 notify_url 派生）
 return_url = "https://your-domain.com/payment/return"
 cert_mode = false                                 # 是否使用证书模式（false=公钥模式，true=证书模式）
 # 公钥模式（cert_mode=false）必填：支付宝公钥，用于验签回调
@@ -74,6 +75,9 @@ cert_mode = false                                 # 是否使用证书模式（f
 app_cert_path = "configs/alipay/appCertPublicKey.crt"
 root_cert_path = "configs/alipay/alipayRootCert.crt"
 alipay_cert_path = "configs/alipay/alipayCertPublicKey_RSA2.crt"
+# 对账定时任务（可选）
+# reconciliation_cron_enable = true   # 是否启用每日对账
+# reconciliation_cron_time = "02:00"   # 执行时间，默认凌晨2点
 
 # Apple Store 配置
 [apple]
