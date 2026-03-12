@@ -34,6 +34,9 @@ expire_time = "24h"
 service_account_file = "configs/google-service-account.json"
 package_name = "com.example.app"
 webhook_secret = "your_google_webhook_secret"
+webhook_url = "https://your-domain.com/webhook/google"
+verify_push_jwt = true
+# expected_subscription = "projects/xxx/subscriptions/yyy"
 
 # 微信支付配置
 [wechat]

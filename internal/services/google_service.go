@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -304,28 +303,8 @@ func getInt64Value(val *int64) int64 {
 	return 0
 }
 
-// VerifyWebhookSignature 验证Google Play Webhook签名
-// 确保Webhook请求来自Google Play，防止伪造通知
-// 参数：
-//   - payload: 请求体数据
-//   - signature: 请求签名
-//
-// 返回：错误或nil
-func (s *GooglePlayService) VerifyWebhookSignature(payload []byte, signature string) error {
-	decodedSignature, err := base64.StdEncoding.DecodeString(signature)
-	if err != nil {
-		return fmt.Errorf("failed to decode signature: %w", err)
-	}
-
-	// In a real implementation, you would verify the signature using Google's public key
-	// For now, we'll just log it
-	s.logger.Info("webhook signature verification (placeholder)",
-		zap.String("signature", signature),
-		zap.Int("payload_length", len(payload)),
-		zap.String("decoded_signature", string(decodedSignature)))
-
-	return nil
-}
+// Google Play RTDN 通过 Pub/Sub 推送，身份验证使用 Pub/Sub OIDC JWT（在 Handler 中 verifyPubSubJWT 实现）。
+// 需在 Pub/Sub 订阅中启用认证，并配置 webhook_url、verify_push_jwt=true。
 
 // Helper function to convert millis to time
 func millisToTime(millis string) (time.Time, error) {

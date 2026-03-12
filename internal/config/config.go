@@ -57,11 +57,12 @@ type RedisConfig struct {
 // GoogleConfig Google Play相关配置
 // 包含服务账号和应用包名等关键信息
 type GoogleConfig struct {
-	ServiceAccountFile string // Google服务账号JSON文件路径
-	PackageName        string // Android应用包名，如com.example.app
-	WebhookSecret      string // Webhook密钥，用于验证Google Play通知
-	WebhookURL         string // Webhook 完整 URL，用于 Pub/Sub JWT 验证的 audience
-	VerifyPushJWT      bool   // 是否验证 Pub/Sub 推送的 JWT 签名（需在 Pub/Sub 订阅中启用认证）
+	ServiceAccountFile   string // Google服务账号JSON文件路径
+	PackageName          string // Android应用包名，如com.example.app
+	WebhookSecret        string // Webhook密钥（预留，Pub/Sub 使用 JWT 认证）
+	WebhookURL           string // Webhook 完整 URL，用于 Pub/Sub JWT 验证的 audience
+	VerifyPushJWT        bool   `toml:"verify_push_jwt"`       // 是否验证 Pub/Sub 推送的 JWT 签名（需在 Pub/Sub 订阅中启用认证）
+	ExpectedSubscription string `toml:"expected_subscription"` // 期望的 Pub/Sub 订阅全名，如 projects/xxx/subscriptions/yyy，用于校验消息来源
 }
 
 // JWTConfig JWT认证配置
@@ -101,15 +102,15 @@ type AppleConfig struct {
 
 // WechatConfig 微信支付配置
 type WechatConfig struct {
-	AppID             string // 微信应用ID（公众号/小程序/APP）
-	MchID             string // 微信商户号
-	APIv3Key          string // API v3密钥
-	SerialNo          string // 证书序列号
-	PrivateKey        string // 商户私钥内容
-	PrivateKeyPath    string // 商户私钥文件路径
-	NotifyURL         string // 异步通知URL
-	CertPath          string // 商户证书路径（可选，用于请求签名）
-	PlatformCertPath  string // 微信平台证书路径（用于验签回调，可从商户平台下载）
+	AppID            string // 微信应用ID（公众号/小程序/APP）
+	MchID            string // 微信商户号
+	APIv3Key         string // API v3密钥
+	SerialNo         string // 证书序列号
+	PrivateKey       string // 商户私钥内容
+	PrivateKeyPath   string // 商户私钥文件路径
+	NotifyURL        string // 异步通知URL
+	CertPath         string // 商户证书路径（可选，用于请求签名）
+	PlatformCertPath string // 微信平台证书路径（用于验签回调，可从商户平台下载）
 }
 
 // Load 从配置文件加载配置，支持环境变量覆盖
@@ -183,11 +184,12 @@ func loadDefaults() *Config {
 			MinIdleConns: 5,
 		},
 		Google: GoogleConfig{
-			ServiceAccountFile: "service-account.json",
-			PackageName:        "com.example.app",
-			WebhookSecret:      "",
-			WebhookURL:         "",
-			VerifyPushJWT:      false,
+			ServiceAccountFile:   "service-account.json",
+			PackageName:          "com.example.app",
+			WebhookSecret:        "",
+			WebhookURL:           "",
+			VerifyPushJWT:        true, // 默认开启，生产环境应验证 Pub/Sub JWT
+			ExpectedSubscription: "",
 		},
 		JWT: JWTConfig{
 			Secret:     "your-secret-key",
@@ -308,6 +310,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if verifyPushJWT := os.Getenv("GOOGLE_VERIFY_PUSH_JWT"); verifyPushJWT != "" {
 		c.Google.VerifyPushJWT = verifyPushJWT == "true" || verifyPushJWT == "1"
+	}
+	if expectedSub := os.Getenv("GOOGLE_EXPECTED_SUBSCRIPTION"); expectedSub != "" {
+		c.Google.ExpectedSubscription = expectedSub
 	}
 
 	// JWT配置覆盖

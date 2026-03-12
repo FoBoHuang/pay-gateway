@@ -126,8 +126,13 @@ func (h *GoogleWebhookHandler) verifyPubSubJWT(c *gin.Context) error {
 // @Failure 500 {object} ErrorResponse
 // @Router /webhook/google [post]
 func (h *GoogleWebhookHandler) HandleGooglePlayWebhook(c *gin.Context) {
-	// 1. Pub/Sub JWT 验证（可选，需配置 GOOGLE_VERIFY_PUSH_JWT=true 和 GOOGLE_WEBHOOK_URL）
-	if h.config != nil && h.config.VerifyPushJWT && h.config.WebhookURL != "" {
+	// 1. Pub/Sub JWT 验证：当配置了 WebhookURL 时，必须启用 verify_push_jwt 以验证请求来自 Google Pub/Sub
+	if h.config != nil && h.config.WebhookURL != "" {
+		if !h.config.VerifyPushJWT {
+			h.logger.Warn("已配置 webhook_url 但未启用 verify_push_jwt，拒绝未认证请求以提升安全性")
+			ErrorJSON(c, 403, "需启用 verify_push_jwt 并配置 webhook_url 以验证请求来源", nil)
+			return
+		}
 		if err := h.verifyPubSubJWT(c); err != nil {
 			h.logger.Warn("Google Webhook JWT 验证失败", zap.Error(err))
 			ErrorJSON(c, 401, "JWT 验证失败", err)
@@ -173,6 +178,17 @@ func (h *GoogleWebhookHandler) HandleGooglePlayWebhook(c *gin.Context) {
 		h.logger.Warn("Google Webhook 包名不匹配", zap.String("expected", expectedPkg), zap.String("received", webhookData.PackageName))
 		ErrorJSON(c, 403, "包名不匹配", nil)
 		return
+	}
+
+	// 3. 订阅名校验（可选）：确保消息来自配置的 Pub/Sub 订阅
+	if h.config != nil && h.config.ExpectedSubscription != "" && webhookReq.Subscription != "" {
+		if webhookReq.Subscription != h.config.ExpectedSubscription {
+			h.logger.Warn("Google Webhook 订阅名不匹配",
+				zap.String("expected", h.config.ExpectedSubscription),
+				zap.String("received", webhookReq.Subscription))
+			ErrorJSON(c, 403, "订阅名不匹配", nil)
+			return
+		}
 	}
 
 	// 创建Webhook事件记录

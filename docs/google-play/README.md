@@ -9,6 +9,7 @@
 - [支付流程](#支付流程)
 - [API 接口](#api-接口)
 - [Webhook 处理](#webhook-处理)
+- [安全机制](#安全机制)
 - [最佳实践](#最佳实践)
 
 ## 功能概述
@@ -38,22 +39,13 @@
 
 ```toml
 [google]
-# 服务账号 JSON 文件内容或路径
-service_account_file = '''
-{
-  "type": "service_account",
-  "project_id": "your-project-id",
-  "private_key_id": "xxx",
-  "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
-  "client_email": "xxx@xxx.iam.gserviceaccount.com",
-  "client_id": "xxx",
-  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-  "token_uri": "https://oauth2.googleapis.com/token"
-}
-'''
-
-# Android 应用包名
+service_account_file = "configs/google-service-account.json"
 package_name = "com.example.app"
+
+# Webhook 安全（RTDN 通过 Pub/Sub 推送）
+webhook_url = "https://your-domain.com/webhook/google"  # JWT audience，与 Pub/Sub 订阅 endpoint 一致
+verify_push_jwt = true   # 必须为 true，验证请求来自 Google Pub/Sub
+expected_subscription = "projects/your-project/subscriptions/your-rtdn-sub"  # 可选，校验订阅来源
 ```
 
 ### 3. 配置 Google Play Console
@@ -380,20 +372,40 @@ GET /api/v1/google/users/1/subscriptions
 
 ## 安全机制
 
+### 安全机制概览
+
+| 环节 | 机制 | 说明 |
+|------|------|------|
+| **购买验证** | Google API 服务端验证 | 通过 Android Publisher API 验证 `purchaseToken`，不依赖客户端可信 |
+| **购买验证** | 包名校验 | 校验 `packageName` 与配置一致，防止跨应用伪造 |
+| **Webhook** | Pub/Sub JWT 验签 | 验证推送请求的 JWT 签名，确保请求来自 Google Pub/Sub |
+| **Webhook** | 订阅名校验 | 可选校验 `subscription`，确保消息来自指定 Pub/Sub 订阅 |
+| **Webhook** | 二次验证 | 关键事件处理前调用 Google API 再次确认状态 |
+
+### 购买验证安全
+
+- 服务端调用 **Google Play Android Developer API** 验证 `purchaseToken`，结果来自 Google 官方，无法伪造
+- 校验 `packageName` 与配置的 `package_name` 一致，防止将其他应用的购买凭证用于本应用
+- 验证通过后再进行 Acknowledge/Consume 等操作，确保状态与 Google 权威数据一致
+
 ### Webhook 安全验证
 
 | 机制 | 说明 | 配置 |
 |------|------|------|
-| **包名校验** | 校验通知中的 `packageName` 与配置一致，防止跨应用伪造 | `GOOGLE_PACKAGE_NAME` |
-| **二次验证** | 所有关键事件（购买/取消/续订/过期等）处理前调用 Google API 确认状态 | 自动 |
-| **Pub/Sub JWT** | 验证推送请求的 JWT 签名（需在 GCP 订阅中启用认证） | `GOOGLE_VERIFY_PUSH_JWT=true`、`GOOGLE_WEBHOOK_URL` |
+| **Pub/Sub JWT** | **必选**：验证推送请求的 JWT 签名，确保请求来自 Google Pub/Sub | `webhook_url` + `verify_push_jwt=true` |
+| **包名校验** | 校验通知中的 `packageName` 与配置一致，防止跨应用伪造 | `package_name` |
+| **订阅名校验** | 可选：校验 `subscription` 字段，确保消息来自指定 Pub/Sub 订阅 | `expected_subscription` |
+| **二次验证** | 所有关键事件处理前调用 Google API 确认状态 | 自动 |
+
+> **重要**：配置了 `webhook_url` 后，**必须**同时设置 `verify_push_jwt=true`，否则 Webhook 请求会被拒绝（403）。
 
 ### 启用 Pub/Sub JWT 验证
 
-1. 在 Google Cloud Console 创建推送订阅时勾选「启用身份验证」
-2. 配置环境变量：
-   - `GOOGLE_WEBHOOK_URL`：Webhook 完整 URL（如 `https://your-domain.com/webhook/google`）
-   - `GOOGLE_VERIFY_PUSH_JWT=true`
+1. 在 Google Cloud Console 创建推送订阅时**勾选「启用身份验证」**
+2. 在 config.toml 或环境变量中配置：
+   - `webhook_url`：Webhook 完整 URL（与 Pub/Sub 订阅的 push endpoint 一致，作为 JWT audience）
+   - `verify_push_jwt = true`：必须为 true
+   - `expected_subscription`（可选）：期望的订阅全名，如 `projects/xxx/subscriptions/yyy`
 
 ## 最佳实践
 

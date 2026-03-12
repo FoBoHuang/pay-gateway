@@ -34,6 +34,10 @@ expire_time = "24h"
 service_account_file = "configs/google-service-account.json"
 package_name = "com.example.app"
 webhook_secret = "your_google_webhook_secret"
+# Webhook 安全：Pub/Sub 推送时需验证 JWT
+webhook_url = "https://your-domain.com/webhook/google"  # 与 Pub/Sub 订阅的 push endpoint 一致，作为 JWT audience
+verify_push_jwt = true   # 必须为 true，验证请求来自 Google Pub/Sub
+# expected_subscription = "projects/your-project/subscriptions/your-rtdn-subscription"  # 可选，校验订阅名
 
 # 微信支付配置
 [wechat]

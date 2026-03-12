@@ -9,6 +9,7 @@
 - [支付流程](#支付流程)
 - [API 接口](#api-接口)
 - [Webhook 处理](#webhook-处理)
+- [安全机制](#安全机制)
 - [最佳实践](#最佳实践)
 
 ## 功能概述
@@ -428,6 +429,32 @@ Apple Webhook 不直接包含 `order_id`，系统通过以下机制关联：
   │ 4. 更新对应的 Order 状态                                                  │
   └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+## 安全机制
+
+### 安全机制概览
+
+| 环节 | 机制 | 说明 |
+|------|------|------|
+| **购买验证** | 收据验证 (Receipt) | 将收据发送至 Apple 服务器验证，兼容旧版 |
+| **购买验证** | App Store Server API | 通过 `Get Transaction Info` 获取交易详情，推荐方式 |
+| **购买验证** | 签名交易解析 | `ParseSignedTransaction` 解析并验证交易 JWS 签名 |
+| **Webhook** | JWS 验签 | `ParseNotificationV2WithClaim` 验证 `signedPayload` 的 JWS 签名 |
+| **Webhook** | 证书链验证 | 从 JWS header `x5c` 获取证书链，使用 Apple Root CA G3 验证 |
+| **Webhook** | 嵌套 JWT 解析 | 验签通过后解析 `signedTransactionInfo`、`signedRenewalInfo` 等嵌套 JWT |
+
+### 购买验证安全
+
+- **收据验证**：`VerifyPurchase` 使用 `appstore.Verify` 将收据发送到 Apple 服务器验证，结果来自 Apple 官方
+- **交易验证（推荐）**：`VerifyTransaction` 通过 App Store Server API 的 `GetTransactionInfo` 获取交易详情，并用 `ParseSignedTransaction` 解析签名交易数据，确保数据未被篡改
+- 校验 `bundleId` 与配置一致，防止跨应用伪造
+
+### Webhook 安全验证
+
+- **JWS 验签**：使用 go-iap 的 `ParseNotificationV2WithClaim` 验证 `signedPayload`，验签失败则返回 400
+- **证书链**：从 JWS header 的 `x5c` 获取证书链，使用 Apple Root CA G3 验证证书有效性
+- **嵌套 JWT**：`signedTransactionInfo`、`signedRenewalInfo` 等嵌套 JWT 在外层 JWS 验签通过后再解析，保证端到端可信
+- **处理流程**：`HandleAppleWebhook` → `ParseNotification`（内含 `ParseNotificationV2WithClaim`）→ 验签失败则不处理并返回错误
 
 ## 最佳实践
 
