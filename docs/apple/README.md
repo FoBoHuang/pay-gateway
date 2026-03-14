@@ -443,6 +443,15 @@ Apple Webhook 不直接包含 `order_id`，系统通过以下机制关联：
 | **Webhook** | 证书链验证 | 从 JWS header `x5c` 获取证书链，使用 Apple Root CA G3 验证 |
 | **Webhook** | 嵌套 JWT 解析 | 验签通过后解析 `signedTransactionInfo`、`signedRenewalInfo` 等嵌套 JWT |
 
+### 与 Google Play 安全机制的区别
+
+| | Apple | Google Play |
+|---|---|---|
+| 消息体 | **签名的 JWS**（`signedPayload`） | 明文 JSON（`{"message":{"data":"base64..."}}`) |
+| 验证方式 | **消息体本身就是签名数据** | HTTP `Authorization` 头中的 JWT |
+| 公钥来源 | JWS header 的 `x5c` 证书链 → Apple Root CA G3 | `googleapis.com/oauth2/v3/certs` |
+| 核心区别 | 安全验证在**数据层**——消息体自带签名，一体化验证 | 安全验证在**传输层**——消息体明文 + 单独的 JWT 认证 |
+
 ### 购买验证安全
 
 - **收据验证**：`VerifyPurchase` 使用 `appstore.Verify` 将收据发送到 Apple 服务器验证，结果来自 Apple 官方
@@ -451,10 +460,67 @@ Apple Webhook 不直接包含 `order_id`，系统通过以下机制关联：
 
 ### Webhook 安全验证
 
-- **JWS 验签**：使用 go-iap 的 `ParseNotificationV2WithClaim` 验证 `signedPayload`，验签失败则返回 400
-- **证书链**：从 JWS header 的 `x5c` 获取证书链，使用 Apple Root CA G3 验证证书有效性
-- **嵌套 JWT**：`signedTransactionInfo`、`signedRenewalInfo` 等嵌套 JWT 在外层 JWS 验签通过后再解析，保证端到端可信
-- **处理流程**：`HandleAppleWebhook` → `ParseNotification`（内含 `ParseNotificationV2WithClaim`）→ 验签失败则不处理并返回错误
+Apple 发送的 Webhook 请求格式：
+
+```http
+POST https://api.myapp.com/webhook/apple
+Content-Type: application/json
+
+{"signedPayload": "eyJhbGciOiJFUzI1NiIsIng1YyI6WyJNSUlF..."}
+```
+
+`signedPayload` 是一个 JWS（JSON Web Signature），三段式结构 `header.payload.signature`：
+
+```
+┌─ Header (Base64) ──────────────────────────────────────┐
+│ {                                                       │
+│   "alg": "ES256",                                       │
+│   "x5c": [                                              │  ← 证书链
+│     "MIIEoTCCBEeg...",   // 叶子证书（Apple 签发的）    │
+│     "MIICQzCCAcmg...",   // 中间证书                    │
+│     "MIICQzCCAcmg..."    // 根证书                      │
+│   ]                                                     │
+│ }                                                       │
+└─────────────────────────────────────────────────────────┘
+┌─ Payload (Base64) ─────────────────────────────────────┐
+│ {                                                       │
+│   "notificationType": "DID_RENEW",                      │
+│   "notificationUUID": "a1b2c3-...",                     │
+│   "data": {                                             │
+│     "bundleId": "com.example.app",                      │
+│     "environment": "Production",                        │
+│     "signedTransactionInfo": "eyJhbG...",  ← 嵌套 JWT  │
+│     "signedRenewalInfo": "eyJhbG..."       ← 嵌套 JWT  │
+│   }                                                     │
+│ }                                                       │
+└─────────────────────────────────────────────────────────┘
+┌─ Signature ────────────────────────────────────────────┐
+│  ES256 签名（用叶子证书的私钥签名）                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 验签流程
+
+**第一层：JWS 验签（`ParseNotificationV2WithClaim`）**
+
+`HandleAppleWebhook` → `ParseNotification` → `ParseNotificationV2WithClaim`，内部执行：
+
+1. 从 JWS header 的 `x5c` 中取出证书链
+2. 验证证书链：叶子证书 → 中间证书 → **Apple Root CA G3**（硬编码的信任锚）
+3. 用叶子证书的公钥验证 ES256 签名
+4. 签名合法 → 解码 payload 返回；签名不合法 → 返回 error → handler 返回 400
+
+**第二层：嵌套 JWT 解析**
+
+payload 中的 `signedTransactionInfo` 和 `signedRenewalInfo` 也是 JWT。因为它们嵌套在已验签的外层 JWS 里，代码使用 `ParseUnverified` 直接解码，信任链路为：外层 JWS 验签通过 → 整个 payload 是 Apple 签发的 → 嵌套 JWT 可信。
+
+#### 防伪造原理
+
+```
+攻击者伪造请求 → 没有 Apple 私钥 → 无法生成合法 JWS 签名
+               → x5c 证书链无法追溯到 Apple Root CA G3
+               → ParseNotificationV2WithClaim 返回 error → 400 拒绝
+```
 
 ## 最佳实践
 

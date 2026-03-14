@@ -382,6 +382,15 @@ GET /api/v1/google/users/1/subscriptions
 | **Webhook** | 订阅名校验 | 可选校验 `subscription`，确保消息来自指定 Pub/Sub 订阅 |
 | **Webhook** | 二次验证 | 关键事件处理前调用 Google API 再次确认状态 |
 
+### 与 Apple 安全机制的区别
+
+| | Google Play | Apple |
+|---|---|---|
+| 消息体 | 明文 JSON（`{"message":{"data":"base64..."}}`) | **签名的 JWS**（`signedPayload`） |
+| 验证方式 | HTTP `Authorization` 头中的 JWT | **消息体本身就是签名数据** |
+| 公钥来源 | `googleapis.com/oauth2/v3/certs`（在线获取 JWK Set） | JWS header 的 `x5c` 证书链 → Apple Root CA G3 |
+| 核心区别 | 安全验证在**传输层**——消息体明文 + 单独的 JWT 认证 | 安全验证在**数据层**——消息体自带签名，一体化验证 |
+
 ### 购买验证安全
 
 - 服务端调用 **Google Play Android Developer API** 验证 `purchaseToken`，结果来自 Google 官方，无法伪造
@@ -398,6 +407,37 @@ GET /api/v1/google/users/1/subscriptions
 | **二次验证** | 所有关键事件处理前调用 Google API 确认状态 | 自动 |
 
 > **重要**：配置了 `webhook_url` 后，**必须**同时设置 `verify_push_jwt=true`，否则 Webhook 请求会被拒绝（403）。
+
+Google Pub/Sub 发送的 Webhook 请求格式：
+
+```http
+POST https://api.myapp.com/webhook/google
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOi...
+Content-Type: application/json
+
+{"message":{"data":"base64encoded...","messageId":"123456"}}
+```
+
+#### 验签流程
+
+1. 从 `Authorization: Bearer <token>` 中提取 JWT
+2. 调用 `idtoken.Validate(ctx, token, webhookURL)` 验证：
+   - **签名验证**：从 Google 公钥端点 `https://www.googleapis.com/oauth2/v3/certs` 获取 JWK Set，通过 JWT header 中的 `kid` 匹配公钥，验证 RS256 签名
+   - **过期检查**：检查 JWT 的 `exp` 字段
+   - **audience 校验**：检查 JWT 中的 `aud` 是否等于配置的 `webhook_url`，防止 JWT 被重放到其他端点
+3. 校验通过后解码消息体中的 `data`（base64），解析通知内容
+4. 校验 `packageName`、`subscription`（可选）等字段
+
+#### 防伪造原理
+
+```
+攻击者伪造请求 → 没有 Google 服务账号私钥 → 无法生成合法 JWT 签名
+               → idtoken.Validate 验证失败 → 403 拒绝
+
+攻击者重放其他端点的 JWT → aud 不匹配 webhook_url → 403 拒绝
+```
+
+> **公钥无需手动配置**：Google 的公钥公开发布在 `googleapis.com/oauth2/v3/certs`，库内部会自动获取并缓存，定期轮换时自动刷新。
 
 ### 启用 Pub/Sub JWT 验证
 
