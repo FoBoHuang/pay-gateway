@@ -12,6 +12,7 @@
 - [API 接口](#api-接口)
 - [Webhook 处理](#webhook-处理)
 - [回调处理流程与防篡改机制](#回调处理流程与防篡改机制)
+- [安全机制](#安全机制)
 - [最佳实践](#最佳实践)
 
 ## 功能概述
@@ -506,6 +507,86 @@ Wechatpay-Signature: 微信用私钥对 body 的签名
   ┌─────────────────────┐               ┌─────────────────────┐
   │ 密文被篡改→解密失败   │               │ 签名无效→拒绝请求    │
   └─────────────────────┘               └─────────────────────┘
+```
+
+## 安全机制
+
+### 安全机制概览
+
+| 环节 | 机制 | 说明 |
+|------|------|------|
+| **商户→微信（API 请求）** | 商户私钥签名 + `serial_no` | 商户用私钥签名请求，微信通过 `serial_no` 找到商户公钥验签 |
+| **微信→商户（Webhook 回调）** | 微信私钥签名 + 平台证书 | 微信用私钥签名回调，商户用 `platform_cert_path` 中的平台公钥验签 |
+| **回调内容保护** | AEAD_AES_256_GCM 加密 | 回调内容使用 `api_v3_key` 加密，密文自带认证标签，防篡改 |
+
+### `serial_no` 与 `platform_cert_path` 的作用
+
+这两个配置分别用于**两个方向**的通信安全：
+
+```
+商户 → 微信（调 API）:
+  商户用 商户私钥 签名请求
+  微信用 serial_no 找到 商户公钥证书 → 验签
+
+微信 → 商户（Webhook 回调）:
+  微信用 微信平台私钥 签名回调
+  商户用 platform_cert_path 中的 微信平台公钥 → 验签
+```
+
+| 配置项 | 方向 | 作用 |
+|--------|------|------|
+| `serial_no` | 商户 → 微信 | 商户证书序列号，放在请求头 `Authorization` 中，让微信知道用哪把公钥验证商户的签名（类似 JWT 中的 `kid`） |
+| `platform_cert_path` | 微信 → 商户 | 微信平台证书文件路径，商户从中提取微信公钥来验证回调请求的 `Wechatpay-Signature` |
+
+#### 商户请求签名示例
+
+```http
+POST https://api.mch.weixin.qq.com/v3/pay/transactions/jsapi
+Authorization: WECHATPAY2-SHA256-RSA2048 mchid="1234567890",nonce_str="a1b2c3",signature="Base64签名",timestamp="1704067200",serial_no="1234567890ABCDEF"
+Content-Type: application/json
+
+{"appid":"wx123...","mchid":"1234567890","description":"商品","out_trade_no":"WX2024...","notify_url":"https://...","amount":{"total":9900}}
+```
+
+微信收到请求后：根据 `serial_no="1234567890ABCDEF"` 找到对应的商户公钥证书 → 用该公钥验证 `signature` → 确认请求来自该商户且未被篡改。
+
+#### 回调验签示例
+
+```http
+POST https://your-domain.com/webhook/wechat/notify
+Wechatpay-Timestamp: 1704067200
+Wechatpay-Nonce: a1b2c3d4e5f6
+Wechatpay-Signature: Base64编码的微信签名
+Wechatpay-Serial: 微信平台证书序列号
+Content-Type: application/json
+
+{"id":"xxx","event_type":"TRANSACTION.SUCCESS","resource":{"ciphertext":"加密内容..."}}
+```
+
+商户收到回调后：从 `platform_cert_path` 加载微信平台证书 → 提取公钥 → 验证 `Wechatpay-Signature` → 验签通过后用 `api_v3_key` 解密 `ciphertext`。
+
+### 与 Apple / Google Play 安全机制的对比
+
+| 对比项 | 微信支付 | Apple | Google Play |
+|--------|----------|-------|-------------|
+| **Webhook 消息体** | 明文 JSON（内容加密） | 签名的 JWS | 明文 JSON |
+| **Webhook 验证方式** | 请求头 `Wechatpay-Signature` 签名 | 消息体本身就是 JWS 签名数据 | 请求头 `Authorization` 中的 JWT |
+| **公钥来源** | `platform_cert_path` 本地证书文件 | JWS header `x5c` 证书链 → Apple Root CA G3 | `googleapis.com/oauth2/v3/certs` 在线获取 |
+| **内容加密** | ✅ AEAD_AES_256_GCM 加密 | ❌ payload 明文（但整体已签名） | ❌ 明文（base64 编码） |
+| **请求方向安全** | ✅ 双向签名（商户→微信 + 微信→商户） | 单向（Apple→商户） | 单向（Google→商户） |
+| **核心区别** | **双向签名 + 内容加密**，安全等级最高 | 数据层签名，一体化 | 传输层 JWT 认证 |
+
+> **微信支付的独特之处**：不仅验证回调来源（签名），还对回调内容加密（AEAD_AES_256_GCM）。即使签名被绕过，攻击者也无法构造有效密文（没有 `api_v3_key`）。Apple 和 Google 的回调内容均为明文或可解码。
+
+### 防伪造原理
+
+```
+攻击者伪造回调请求:
+  → 没有微信平台私钥 → 无法生成合法 Wechatpay-Signature → 验签失败 → 拒绝
+  → 即使绕过验签，没有 api_v3_key → 无法构造合法密文 → 解密失败 → 拒绝
+
+攻击者伪造 API 请求（冒充商户）:
+  → 没有商户私钥 → 无法生成合法 Authorization 签名 → 微信验签失败 → 拒绝
 ```
 
 ## 最佳实践

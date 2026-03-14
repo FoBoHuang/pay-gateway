@@ -40,10 +40,10 @@ verify_push_jwt = true
 
 # 微信支付配置
 [wechat]
-app_id = "wx1234567890abcdef"                    # 微信应用ID
+app_id = "wx1234567890abcdef"                     # 微信应用ID
 mch_id = "1234567890"                             # 微信商户号
-apiv3_key = "your_apiv3_key_32_characters_long"  # API v3密钥，32位
-serial_no = "1234567890ABCDEF"                    # 证书序列号
+apiv3_key = "your_apiv3_key_32_characters_long"   # API v3密钥，32位
+serial_no = "1234567890ABCDEF"                    # 商户证书序列号
 private_key = """
 -----BEGIN PRIVATE KEY-----
 Your Wechat Private Key Content Here
@@ -52,7 +52,7 @@ Your Wechat Private Key Content Here
 # 或者使用私钥文件路径
 # private_key_path = "configs/wechat_private_key.pem"
 notify_url = "https://your-domain.com/webhook/wechat/notify"
-cert_path = "configs/wechat_cert.pem"             # 可选，商户证书路径
+cert_path = "configs/wechat_cert.pem"                    # 可选，商户证书路径
 platform_cert_path = "configs/wechat_platform_cert.pem"  # 微信平台证书路径，用于验签回调（从商户平台下载）
 
 # 支付宝配置
