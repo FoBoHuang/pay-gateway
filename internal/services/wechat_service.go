@@ -34,10 +34,16 @@ const wechatAPIBaseURL = "https://api.mch.weixin.qq.com"
 
 // WechatService 微信支付服务
 type WechatService struct {
-	db         *gorm.DB
-	config     *config.WechatConfig
-	logger     *zap.Logger
-	privateKey *rsa.PrivateKey
+	db                       *gorm.DB
+	config                   *config.WechatConfig
+	logger                   *zap.Logger
+	privateKey               *rsa.PrivateKey
+	orderDelayCancelProducer OrderDelayCancelSender
+}
+
+// SetOrderDelayCancelProducer 注入订单延迟取消消息生产者
+func (s *WechatService) SetOrderDelayCancelProducer(producer OrderDelayCancelSender) {
+	s.orderDelayCancelProducer = producer
 }
 
 // NewWechatService 创建微信支付服务实例
@@ -143,6 +149,15 @@ func (s *WechatService) CreateOrder(ctx context.Context, req *CreateWechatOrderR
 		zap.Uint("order_id", order.ID),
 		zap.String("trade_type", req.TradeType),
 	)
+
+	// 发送订单超时取消延迟消息
+	if s.orderDelayCancelProducer != nil {
+		if err := s.orderDelayCancelProducer.SendOrderTimeoutMessage(ctx, orderNo, order.ID); err != nil {
+			s.logger.Warn("发送订单超时取消延迟消息失败，将由定时任务兜底",
+				zap.String("order_no", orderNo),
+				zap.Error(err))
+		}
+	}
 
 	return &CreateWechatOrderResponse{
 		OrderID:     order.ID,

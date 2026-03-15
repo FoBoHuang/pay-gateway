@@ -29,10 +29,16 @@ const (
 
 // AlipayService 支付宝支付服务
 type AlipayService struct {
-	client *alipay.Client
-	db     *gorm.DB
-	config *config.AlipayConfig
-	redis  *cache.Redis // 可选，用于分布式锁
+	client                   *alipay.Client
+	db                       *gorm.DB
+	config                   *config.AlipayConfig
+	redis                    *cache.Redis // 可选，用于分布式锁
+	orderDelayCancelProducer OrderDelayCancelSender
+}
+
+// SetOrderDelayCancelProducer 注入订单延迟取消消息生产者
+func (s *AlipayService) SetOrderDelayCancelProducer(producer OrderDelayCancelSender) {
+	s.orderDelayCancelProducer = producer
 }
 
 // NewAlipayService 创建支付宝支付服务
@@ -161,6 +167,14 @@ func (s *AlipayService) CreateOrder(ctx context.Context, req *CreateAlipayOrderR
 	// 提交事务
 	if err := tx.Commit().Error; err != nil {
 		return nil, fmt.Errorf("提交事务失败: %v", err)
+	}
+
+	// 发送订单超时取消延迟消息
+	if s.orderDelayCancelProducer != nil {
+		if err := s.orderDelayCancelProducer.SendOrderTimeoutMessage(ctx, orderNo, order.ID); err != nil {
+			// 发送失败不影响订单创建，由定时任务兜底
+			fmt.Printf("发送订单超时取消延迟消息失败，将由定时任务兜底: order_no=%s, err=%v\n", orderNo, err)
+		}
 	}
 
 	return &CreateAlipayOrderResponse{

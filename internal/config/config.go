@@ -19,6 +19,19 @@ type Config struct {
 	Alipay   AlipayConfig   // 支付宝配置
 	Apple    AppleConfig    // Apple Store配置
 	Wechat   WechatConfig   // 微信支付配置
+	RocketMQ RocketMQConfig // RocketMQ消息队列配置
+}
+
+// RocketMQConfig RocketMQ 消息队列配置
+// 用于订单超时自动取消等延迟消息场景
+type RocketMQConfig struct {
+	Endpoint         string        // RocketMQ Proxy 地址，如 localhost:8081
+	AccessKey        string        // 访问密钥（可选，开启 ACL 时必填）
+	SecretKey        string        // 密钥（可选，开启 ACL 时必填）
+	OrderDelayTopic  string        // 订单超时取消延迟消息 Topic
+	ConsumerGroup    string        // 消费者组名
+	OrderTimeout     time.Duration // 订单超时时间，默认30分钟
+	Enabled          bool          // 是否启用 RocketMQ（false 时降级为定时任务轮询）
 }
 
 // ServerConfig 服务器配置参数
@@ -230,6 +243,15 @@ func loadDefaults() *Config {
 			CertPath:         "",
 			PlatformCertPath: "",
 		},
+		RocketMQ: RocketMQConfig{
+			Endpoint:        "localhost:8081",
+			AccessKey:       "",
+			SecretKey:       "",
+			OrderDelayTopic: "order-timeout-cancel",
+			ConsumerGroup:   "pay-gateway-order-cancel-cg",
+			OrderTimeout:    30 * time.Minute,
+			Enabled:         false,
+		},
 	}
 }
 
@@ -408,6 +430,29 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if platformCertPath := os.Getenv("WECHAT_PLATFORM_CERT_PATH"); platformCertPath != "" {
 		c.Wechat.PlatformCertPath = platformCertPath
+	}
+
+	// RocketMQ配置覆盖
+	if endpoint := os.Getenv("ROCKETMQ_ENDPOINT"); endpoint != "" {
+		c.RocketMQ.Endpoint = endpoint
+	}
+	if accessKey := os.Getenv("ROCKETMQ_ACCESS_KEY"); accessKey != "" {
+		c.RocketMQ.AccessKey = accessKey
+	}
+	if secretKey := os.Getenv("ROCKETMQ_SECRET_KEY"); secretKey != "" {
+		c.RocketMQ.SecretKey = secretKey
+	}
+	if topic := os.Getenv("ROCKETMQ_ORDER_DELAY_TOPIC"); topic != "" {
+		c.RocketMQ.OrderDelayTopic = topic
+	}
+	if group := os.Getenv("ROCKETMQ_CONSUMER_GROUP"); group != "" {
+		c.RocketMQ.ConsumerGroup = group
+	}
+	if timeout := getDuration("ROCKETMQ_ORDER_TIMEOUT", 0); timeout > 0 {
+		c.RocketMQ.OrderTimeout = timeout
+	}
+	if enabled := os.Getenv("ROCKETMQ_ENABLED"); enabled != "" {
+		c.RocketMQ.Enabled = enabled == "true" || enabled == "1"
 	}
 }
 

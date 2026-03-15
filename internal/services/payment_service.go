@@ -26,6 +26,9 @@ type PaymentService interface {
 	// 查询相关
 	GetUserOrders(ctx context.Context, userID uint, page, pageSize int) ([]*models.Order, int64, error)
 	GetOrderTransactions(ctx context.Context, orderID uint) ([]*models.PaymentTransaction, error)
+
+	// 注入依赖
+	SetOrderDelayCancelProducer(producer OrderDelayCancelSender)
 }
 
 // CreateOrderRequest 创建订单请求
@@ -44,12 +47,18 @@ type CreateOrderRequest struct {
 
 // paymentServiceImpl 支付服务实现
 type paymentServiceImpl struct {
-	db            *gorm.DB
-	config        *config.Config
-	logger        *zap.Logger
-	googleService *GooglePlayService
-	alipayService *AlipayService
-	appleService  *AppleService
+	db                    *gorm.DB
+	config                *config.Config
+	logger                *zap.Logger
+	googleService         *GooglePlayService
+	alipayService         *AlipayService
+	appleService          *AppleService
+	orderDelayCancelProducer OrderDelayCancelSender
+}
+
+// OrderDelayCancelSender 订单延迟取消消息发送接口
+type OrderDelayCancelSender interface {
+	SendOrderTimeoutMessage(ctx context.Context, orderNo string, orderID uint) error
 }
 
 // NewPaymentService 创建支付服务
@@ -62,6 +71,11 @@ func NewPaymentService(db *gorm.DB, cfg *config.Config, logger *zap.Logger, goog
 		alipayService: alipayService,
 		appleService:  appleService,
 	}
+}
+
+// SetOrderDelayCancelProducer 注入订单延迟取消消息生产者
+func (s *paymentServiceImpl) SetOrderDelayCancelProducer(producer OrderDelayCancelSender) {
+	s.orderDelayCancelProducer = producer
 }
 
 // CreateOrder 创建订单
@@ -114,6 +128,15 @@ func (s *paymentServiceImpl) CreateOrder(ctx context.Context, req *CreateOrderRe
 		zap.Uint("order_id", order.ID),
 		zap.String("order_no", order.OrderNo),
 		zap.Uint("user_id", order.UserID))
+
+	// 发送订单超时取消延迟消息（最终一致，发送失败不影响订单创建，由定时任务兜底）
+	if s.orderDelayCancelProducer != nil {
+		if err := s.orderDelayCancelProducer.SendOrderTimeoutMessage(ctx, order.OrderNo, order.ID); err != nil {
+			s.logger.Warn("发送订单超时取消延迟消息失败，将由定时任务兜底",
+				zap.String("order_no", order.OrderNo),
+				zap.Error(err))
+		}
+	}
 
 	return order, nil
 }

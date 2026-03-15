@@ -75,6 +75,13 @@ services:
       # JWT配置
       JWT_SECRET: your-jwt-secret-key
       JWT_EXPIRE_TIME: 24h
+
+      # RocketMQ配置
+      ROCKETMQ_ENABLED: "true"
+      ROCKETMQ_ENDPOINT: rocketmq-broker:8081
+      ROCKETMQ_ORDER_DELAY_TOPIC: order-timeout-cancel
+      ROCKETMQ_CONSUMER_GROUP: pay-gateway-order-cancel-cg
+      ROCKETMQ_ORDER_TIMEOUT: 30m
     ports:
       - "8080:8080"
     volumes:
@@ -84,6 +91,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rocketmq-broker:
+        condition: service_healthy
     networks:
       - pay-gateway-network
     healthcheck:
@@ -92,6 +101,51 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  # RocketMQ NameServer
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.3.1
+    container_name: pay-gateway-rocketmq-namesrv
+    command: sh mqnamesrv
+    ports:
+      - "9876:9876"
+    environment:
+      JAVA_OPT_EXT: "-Xms256m -Xmx256m"
+    volumes:
+      - rocketmq_namesrv_data:/home/rocketmq/store
+    networks:
+      - pay-gateway-network
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9876 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # RocketMQ Broker
+  rocketmq-broker:
+    image: apache/rocketmq:5.3.1
+    container_name: pay-gateway-rocketmq-broker
+    command: sh mqbroker -n rocketmq-namesrv:9876 --enable-proxy
+    ports:
+      - "10911:10911"
+      - "10909:10909"
+      - "8081:8081"
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+      JAVA_OPT_EXT: "-Xms256m -Xmx512m"
+    volumes:
+      - rocketmq_broker_data:/home/rocketmq/store
+    depends_on:
+      rocketmq-namesrv:
+        condition: service_healthy
+    networks:
+      - pay-gateway-network
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8081 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # Nginx反向代理（可选）
   nginx:
@@ -111,6 +165,8 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  rocketmq_namesrv_data:
+  rocketmq_broker_data:
 
 networks:
   pay-gateway-network:

@@ -83,6 +83,16 @@ alipay_cert_path = "configs/alipay/alipayCertPublicKey_RSA2.crt"
 # reconciliation_cron_enable = true   # 是否启用每日对账
 # reconciliation_cron_time = "02:00"   # 执行时间，默认凌晨2点
 
+# RocketMQ 消息队列配置（订单超时自动取消）
+[rocketmq]
+enabled = true                                    # 是否启用 RocketMQ（false 时降级为定时任务轮询）
+endpoint = "localhost:8081"                        # RocketMQ Proxy gRPC 地址
+# access_key = ""                                 # 可选，开启 ACL 时填写
+# secret_key = ""                                 # 可选，开启 ACL 时填写
+order_delay_topic = "order-timeout-cancel"         # 订单超时取消延迟消息 Topic
+consumer_group = "pay-gateway-order-cancel-cg"     # 消费者组名
+order_timeout = "30m"                              # 订单超时时间，默认30分钟
+
 # Apple Store 配置
 [apple]
 key_id = "ABC123DEFG"                             # Apple私钥ID

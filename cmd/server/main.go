@@ -18,6 +18,7 @@ import (
 	"pay-gateway/internal/cache"
 	"pay-gateway/internal/config"
 	"pay-gateway/internal/database"
+	"pay-gateway/internal/mq"
 	"pay-gateway/internal/routes"
 	"pay-gateway/internal/services"
 )
@@ -92,6 +93,42 @@ func main() {
 
 	// 初始化支付服务
 	paymentService := services.NewPaymentService(db.GetDB(), cfg, logger, googleService, alipayService, appleService)
+
+	// 初始化 RocketMQ（订单超时自动取消）
+	var mqClient *mq.Client
+	var orderDelayCancelConsumer *mq.OrderDelayCancelConsumer
+	if cfg.RocketMQ.Enabled {
+		var err error
+		mqClient, err = mq.NewClient(&cfg.RocketMQ, logger)
+		if err != nil {
+			logger.Warn("初始化 RocketMQ Producer 失败，延迟取消将降级为定时任务", zap.Error(err))
+		} else {
+			orderProducer := mq.NewOrderDelayCancelProducer(mqClient, &cfg.RocketMQ, logger)
+			// 注入到各支付服务
+			paymentService.SetOrderDelayCancelProducer(orderProducer)
+			if alipayService != nil {
+				alipayService.SetOrderDelayCancelProducer(orderProducer)
+			}
+			if wechatService != nil {
+				wechatService.SetOrderDelayCancelProducer(orderProducer)
+			}
+
+			// 启动消费者
+			orderDelayCancelConsumer, err = mq.NewOrderDelayCancelConsumer(&cfg.RocketMQ, db.GetDB(), logger)
+			if err != nil {
+				logger.Warn("初始化 RocketMQ 订单取消消费者失败", zap.Error(err))
+			} else {
+				orderDelayCancelConsumer.Start()
+			}
+
+			logger.Info("RocketMQ 订单超时取消服务已启动",
+				zap.String("endpoint", cfg.RocketMQ.Endpoint),
+				zap.String("topic", cfg.RocketMQ.OrderDelayTopic),
+				zap.Duration("order_timeout", cfg.RocketMQ.OrderTimeout))
+		}
+	} else {
+		logger.Info("RocketMQ 未启用，订单超时取消将使用定时任务轮询")
+	}
 
 	// 设置Gin模式
 	gin.SetMode(cfg.Server.Mode)
@@ -170,6 +207,18 @@ func main() {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("服务器强制关闭", zap.Error(err))
+	}
+
+	// 关闭 RocketMQ
+	if orderDelayCancelConsumer != nil {
+		if err := orderDelayCancelConsumer.Stop(); err != nil {
+			logger.Error("关闭 RocketMQ 消费者失败", zap.Error(err))
+		}
+	}
+	if mqClient != nil {
+		if err := mqClient.Close(); err != nil {
+			logger.Error("关闭 RocketMQ Producer 失败", zap.Error(err))
+		}
 	}
 
 	logger.Info("服务器已关闭")
